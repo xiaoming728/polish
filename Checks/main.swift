@@ -45,6 +45,23 @@ if CommandLine.arguments.dropFirst().first == "serve" {
     dispatchMain()
 }
 
+// core-checks stream <openAI|anthropic> <baseURL>：真实 URLSession 流式请求，供 scripts/stream-e2e.py 对照模拟服务端
+if CommandLine.arguments.dropFirst().first == "stream" {
+    let a = CommandLine.arguments
+    let p = Profile(name: "e2e", preset: "e2e", wire: Wire(rawValue: a[2])!, baseURL: a[3], model: "m", instruction: "润色", extraJSON: "")
+    MainActor.assumeIsolated {
+        var deltas = 0
+        Polisher().start(p, apiKey: "k", text: "原文", onDelta: { _ in deltas += 1 }, onDone: { r in
+            switch r {
+            case .success(let s): print("OK deltas=\(deltas) \(s)")
+            case .failure(let e): print("ERR \(e.localizedDescription)")
+            }
+            exit(0)
+        })
+    }
+    dispatchMain()
+}
+
 var failures = 0
 func check(_ ok: Bool, _ name: String, file: String = #file, line: Int = #line) {
     if ok { print("✅ \(name)") } else { failures += 1; print("❌ \(name)  (\(line))") }

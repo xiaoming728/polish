@@ -1,25 +1,26 @@
 import Foundation
-import PolishCore
 
 final class Flag: @unchecked Sendable { var value = false }
 
-struct PolishError: LocalizedError {
-    let message: String
-    var errorDescription: String? { message }
+public struct PolishError: LocalizedError {
+    public let message: String
+    public init(message: String) { self.message = message }
+    public var errorDescription: String? { message }
 }
 
 /// 单个流式润色请求。首字（无数据）超时 30s，总计 120s；不自动重试。
 @MainActor
-final class Polisher {
+public final class Polisher {
+    public init() {}
     private var task: Task<Void, Never>?
-    var busy: Bool { task != nil }
+    public var busy: Bool { task != nil }
 
-    func cancel() {
+    public func cancel() {
         task?.cancel()
         task = nil
     }
 
-    func start(_ p: Profile, apiKey: String, text: String,
+    public func start(_ p: Profile, apiKey: String, text: String,
                onDelta: @escaping (String) -> Void, onDone: @escaping (Result<String, Error>) -> Void) {
         cancel()
         task = Task { [weak self] in
@@ -47,7 +48,7 @@ final class Polisher {
         }
     }
 
-    static func describe(_ error: Error) -> Error {
+    public static func describe(_ error: Error) -> Error {
         guard let u = error as? URLError else { return error }
         switch u.code {
         case .timedOut: return PolishError(message: "超时：30 秒内没有收到模型响应。原文未改动。")
@@ -57,7 +58,7 @@ final class Polisher {
         }
     }
 
-    static func stream(_ p: Profile, apiKey: String, text: String, onDelta: @escaping (String) -> Void) async throws -> String {
+    public static func stream(_ p: Profile, apiKey: String, text: String, onDelta: @escaping (String) -> Void) async throws -> String {
         var req = try makeRequest(p, apiKey: apiKey, text: text)
         req.timeoutInterval = 30
         let (bytes, resp) = try await URLSession.shared.bytes(for: req)
@@ -101,7 +102,7 @@ final class Polisher {
         return t.isEmpty ? "（无响应内容）" : String(t.prefix(300))
     }
 
-    static func fetchModels(_ p: Profile, apiKey: String) async -> [String] {
+    public static func fetchModels(_ p: Profile, apiKey: String) async -> [String] {
         guard var req = try? makeModelsRequest(p, apiKey: apiKey) else { return [] }
         req.timeoutInterval = 15
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
