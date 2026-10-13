@@ -2,6 +2,49 @@
 import Foundation
 import PolishCore
 
+// core-checks serve：用真实 EditServer 充当可脚本化的「假 app」，供 scripts/terminal-e2e.py 驱动。
+// stdin 命令：arm / confirm / cancel / die；每个事件打印一行 [app] 日志。
+if CommandLine.arguments.dropFirst().first == "serve" {
+    setvbuf(stdout, nil, _IONBF, 0)
+    MainActor.assumeIsolated {
+        let server = EditServer()
+        var draft = ""
+        server.onEdit = { d in
+            draft = d
+            print("[app] 握手成功，接手草稿 \(d.debugDescription)")
+            if d.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                print("[app] 输入框为空 → 取消")
+                server.reply(.cancel)
+            }
+        }
+        server.onTimeout = { print("[app] 握手超时 → 降级") }
+        server.onDisconnect = { print("[app] polish-edit 断开 → 取消请求") }
+        do { try server.start() } catch { print("[app] 启动失败 \(error)"); exit(1) }
+        print("[app] listening \(Paths.socket)")
+        FileHandle.standardInput.readabilityHandler = { h in
+            let cmds = String(decoding: h.availableData, as: UTF8.self).split(separator: "\n").map(String.init)
+            if cmds.isEmpty { exit(0) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    for c in cmds {
+                        switch c {
+                        case "arm": server.arm(); print("[app] 待命")
+                        case "confirm":
+                            let out = draft.replacingOccurrences(of: "DRAFT", with: "POLISHED")
+                            print("[app] 确认 → \(out.debugDescription)")
+                            server.reply(.ok(Data(out.utf8)))
+                        case "cancel", "copy": print("[app] 放弃"); server.reply(.cancel)
+                        case "die": print("[app] 模拟崩溃"); exit(9)
+                        default: print("[app] 忽略 \(c)")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    dispatchMain()
+}
+
 var failures = 0
 func check(_ ok: Bool, _ name: String, file: String = #file, line: Int = #line) {
     if ok { print("✅ \(name)") } else { failures += 1; print("❌ \(name)  (\(line))") }
@@ -123,6 +166,15 @@ do {
     check(fallbackEditor(env: ["POLISH_FALLBACK_EDITOR": "", "VISUAL": "code -w", "EDITOR": "vim"]) == "code -w", "空值跳过，取 VISUAL")
     check(fallbackEditor(env: ["VISUAL": "/Applications/Polish.app/Contents/MacOS/polish-edit", "EDITOR": "vim"]) == "vim", "VISUAL 指向 polish-edit 时跳过")
     check(fallbackEditor(env: [:]) == "vi", "都没有时用 vi")
+}
+
+// MARK: 结果整理
+
+do {
+    check(finalize("\n  润色后  \n", original: "原文") == "润色后", "去掉首尾空白")
+    check(finalize("<text>\n润色后\n</text>", original: "原文") == "润色后", "去掉模型带回的 <text> 包裹")
+    check(finalize("润色后", original: "echo hi\n") == "润色后\n", "原文以换行结尾时补回换行（zsh 草稿）")
+    check(finalize("第一行\n\n第二行", original: "x") == "第一行\n\n第二行", "保留内部换行")
 }
 
 print(failures == 0 ? "\n全部通过" : "\n\(failures) 项失败")

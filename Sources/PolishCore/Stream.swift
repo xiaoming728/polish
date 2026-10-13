@@ -4,6 +4,15 @@ public enum Wire: String, Codable, CaseIterable, Sendable {
     case openAI, anthropic
 }
 
+/// 整理模型输出：去首尾空白与 <text> 包裹；原文以换行结尾（zsh 草稿）时补回换行。
+public func finalize(_ result: String, original: String) -> String {
+    var s = result.trimmingCharacters(in: .whitespacesAndNewlines)
+    if s.hasPrefix("<text>") && s.hasSuffix("</text>") {
+        s = String(s.dropFirst(6).dropLast(7)).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    return original.hasSuffix("\n") ? s + "\n" : s
+}
+
 public enum StreamEvent: Equatable, Sendable {
     case text(String)
     case done

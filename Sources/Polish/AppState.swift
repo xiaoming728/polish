@@ -1,0 +1,60 @@
+import Foundation
+import PolishCore
+
+enum FillMode: String, Codable, CaseIterable {
+    case preview = "预览"
+    case auto = "自动替换"
+    case toast = "小提示确认"
+
+    var detail: String {
+        switch self {
+        case .preview: return "弹出预览面板，流式显示结果；⏎ 替换 / ⌘C 复制 / Esc 放弃"
+        case .auto: return "完成后校验通过即直接替换；失败或校验不通过时弹出面板"
+        case .toast: return "不展开全文，完成后出现小提示，⏎ 替换"
+        }
+    }
+}
+
+enum Phase: Equatable {
+    case streaming, done
+    case failed(String)
+    case verifyFailed(String)
+}
+
+/// 持久化设置（UserDefaults；Key 在钥匙串）+ 当前润色会话的显示状态
+@MainActor
+final class AppState: ObservableObject {
+    private let defaults = UserDefaults.standard
+
+    @Published var profiles: [Profile] { didSet { save() } }
+    @Published var currentID: UUID { didSet { save() } }
+    @Published var fillMode: FillMode { didSet { save() } }
+    @Published var hotKey: HotKeySpec { didSet { save() } }
+
+    @Published var source = ""
+    @Published var output = ""
+    @Published var phase = Phase.done
+    @Published var target = ""
+    @Published var terminal = false
+    @Published var copyOnly = false
+
+    var current: Profile { profiles.first { $0.id == currentID } ?? profiles[0] }
+
+    init() {
+        let dec = JSONDecoder()
+        let ps = defaults.data(forKey: "profiles").flatMap { try? dec.decode([Profile].self, from: $0) } ?? []
+        let list = ps.isEmpty ? [defaultProfile()] : ps
+        profiles = list
+        currentID = defaults.string(forKey: "currentID").flatMap(UUID.init).flatMap { id in list.contains { $0.id == id } ? id : nil } ?? list[0].id
+        fillMode = defaults.string(forKey: "fillMode").flatMap(FillMode.init) ?? .preview
+        hotKey = defaults.data(forKey: "hotKey").flatMap { try? dec.decode(HotKeySpec.self, from: $0) } ?? .standard
+    }
+
+    private func save() {
+        let enc = JSONEncoder()
+        defaults.set(try? enc.encode(profiles), forKey: "profiles")
+        defaults.set(currentID.uuidString, forKey: "currentID")
+        defaults.set(fillMode.rawValue, forKey: "fillMode")
+        defaults.set(try? enc.encode(hotKey), forKey: "hotKey")
+    }
+}
