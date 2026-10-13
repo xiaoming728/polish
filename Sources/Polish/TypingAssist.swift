@@ -34,10 +34,15 @@ final class TypingAssist {
         self.state = state
         panel.contentView = NSHostingView(rootView: TypingHintView(model: model))
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
-            // 只在切到普通应用时重置；钥匙串确认框（SecurityAgent）、输入法候选窗等后台进程被激活不算换应用
+            // 只在真的换到另一个普通应用时重置：钥匙串确认框、输入法候选窗等后台进程被激活不算；
+            // 提示框首次弹出时系统会对当前应用重发激活通知，也不算（实测 TextEdit）
             let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            guard app?.activationPolicy == .regular else { return }
-            MainActor.assumeIsolated { self?.reset() }
+            guard let app, app.activationPolicy == .regular else { return }
+            MainActor.assumeIsolated {
+                guard let self, app.processIdentifier != self.pid else { return }
+                Log.write("typing reset: activate \(app.bundleIdentifier ?? "?")")
+                self.reset()
+            }
         }
     }
 
@@ -103,6 +108,7 @@ final class TypingAssist {
         }
         if event.getIntegerValueField(.eventSourceUserData) == Keys.marker { return } // 自己合成的
         guard type == .keyDown else {
+            Log.write("typing reset: event type=\(type.rawValue)")
             reset() // 点鼠标：光标可能已移动
             return
         }
@@ -132,6 +138,10 @@ final class TypingAssist {
 
     private func feed(_ k: TypingKey) {
         guard state.typingAssist, !isBusy(), !choosing else { return }
+        if polisher.busy {
+            let kind: String = { if case .letter = k { return "letter" }; return "\(k)" }()
+            Log.write("typing cancel in-flight by key=\(kind)")
+        }
         buffer.feed(k)
         debounce?.cancel()
         polisher.cancel()
@@ -204,8 +214,9 @@ final class TypingAssist {
 
     /// 光标上方（输入法候选窗通常在下方）；取不到光标位置时放在鼠标上方
     private func origin(for size: NSSize) -> NSPoint {
-        let caret = Selection.focusedElement().flatMap(Selection.caretRect)
-        Log.write("typing anchor=\(caret == nil ? "mouse" : "caret")")
+        let el = Selection.focusedElement()
+        let caret = el.flatMap(Selection.caretRect)
+        Log.write("typing anchor=\(caret == nil ? "mouse" : "caret") role=\(el.flatMap(Selection.role) ?? "nil")")
         let anchor = caret ?? CGRect(origin: NSEvent.mouseLocation, size: .zero)
         let screen = NSScreen.screens.first { $0.frame.contains(anchor.origin) } ?? NSScreen.main!
         let vf = screen.visibleFrame

@@ -184,10 +184,10 @@ enum Selection {
     /// 光标（插入点）的屏幕矩形：有选区用选区；否则取光标前一个字符的矩形，贴在其右侧
     static func caretRect(_ el: AXUIElement) -> CGRect? {
         var r: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, &r) == .success, let r,
-              CFGetTypeID(r) == AXValueGetTypeID() else { return nil }
         var range = CFRange()
-        guard AXValueGetValue(r as! AXValue, .cfRange, &range) else { return nil }
+        // 空文档在输入法组合态下可能连选区范围都读不到：直接退回输入框第一行
+        guard AXUIElementCopyAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, &r) == .success, let r,
+              CFGetTypeID(r) == AXValueGetTypeID(), AXValueGetValue(r as! AXValue, .cfRange, &range) else { return firstLine(el) }
         if range.length > 0 { return bounds(el) }
         for probe in [CFRange(location: range.location, length: 0), CFRange(location: max(range.location - 1, 0), length: 1)] {
             var p = probe

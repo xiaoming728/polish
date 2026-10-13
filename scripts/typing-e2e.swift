@@ -105,6 +105,13 @@ func round(_ pinyin: String, english: Bool) {
         check(anchor.contains("caret"), "「\(pinyin)」：提示框定位在光标", anchor)
     }
     guard result?.contains("ok=true") == true else { return }
+    if let dir = ProcessInfo.processInfo.environment["SHOT_DIR"] { // 可选：提示框出现时截屏留证
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        p.arguments = ["-x", "\(dir)/hint-\(pinyin).png"]
+        try? p.run()
+        p.waitUntilExit()
+    }
     key(english ? kVK_ANSI_1 : kVK_ANSI_2, .maskAlternate)
     usleep(1_500_000)
     let after = documentText()
