@@ -152,16 +152,18 @@ struct ProfilesTab: View {
                     }
                 }
                 HStack {
-                    Button {
-                        var p = defaultProfile()
+                    Button { // 复制当前选中配置的服务连接，Key 自动共用
+                        var p = state.profiles[index ?? 0]
+                        p.id = UUID()
                         p.name = "新配置"
+                        p.instruction = defaultInstruction
                         state.profiles.append(p)
                         sel = p.id
                     } label: { Image(systemName: "plus") }
                     Button {
                         guard let i = index, state.profiles.count > 1 else { return }
                         let id = state.profiles[i].id
-                        Keychain.set(id.uuidString, "")
+                        Keychain.set(id.uuidString, "") // 只清旧版按配置存的 Key；按服务存的 Key 可能被其他场景共用
                         state.profiles.remove(at: i)
                         if state.currentID == id { state.currentID = state.profiles[0].id }
                         sel = state.currentID
@@ -180,7 +182,7 @@ struct ProfilesTab: View {
     }
 
     func loadKey() {
-        if let i = index { key = Keychain.get(state.profiles[i].id.uuidString) ?? "" }
+        if let i = index { key = Keychain.apiKey(state.profiles[i]) }
     }
 
     func form(_ i: Int) -> some View {
@@ -200,16 +202,18 @@ struct ProfilesTab: View {
                 Text("Anthropic").tag(Wire.anthropic)
             }
             TextField("Base URL", text: $state.profiles[i].baseURL)
+                .onChange(of: state.profiles[i].baseURL) { _, _ in loadKey() } // Key 跟着服务走
             LabeledContent("API Key") {
                 HStack {
                     // 密码框禁止向外复制（系统行为）；需要查看或复制时切到明文
                     if showKey { TextField("", text: $key) } else { SecureField("", text: $key) }
                     Button { showKey.toggle() } label: { Image(systemName: showKey ? "eye.slash" : "eye") }
                         .buttonStyle(.borderless).help(showKey ? "隐藏" : "显示")
-                    Text("存于钥匙串").font(.caption).foregroundStyle(.secondary)
+                    Text("同一服务的场景共用").font(.caption).foregroundStyle(.secondary)
                 }
                 .onChange(of: key) { _, v in
-                    if !Keychain.set(state.profiles[i].id.uuidString, v) { status = "✗ API Key 保存到钥匙串失败" }
+                    guard v != Keychain.apiKey(state.profiles[i]) else { return } // 切换配置时的载入不算修改
+                    if !Keychain.set(keyAccount(state.profiles[i]), v) { status = "✗ API Key 保存到钥匙串失败" }
                 }
             }
             LabeledContent("模型") {

@@ -214,7 +214,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         state.output = ""
         state.phase = .streaming
         let p = state.current
-        let key = Keychain.get(p.id.uuidString) ?? ""
+        let key = Keychain.apiKey(p)
         let local = ["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "")
         if key.isEmpty && !local {
             fail("配置「\(p.name)」还没有填写 API Key。按 ⌘, 打开设置。")

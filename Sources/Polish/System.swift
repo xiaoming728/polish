@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import PolishCore
 import Security
 
 // MARK: - 全局快捷键（Carbon，无需权限）
@@ -289,6 +290,11 @@ enum Keychain {
         var out: CFTypeRef?
         guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return nil }
         return String(data: d, encoding: .utf8)
+    }
+
+    /// 配置用的 Key：按服务归属；兼容 0.0.1 早期按配置 id 存的 Key
+    static func apiKey(_ p: Profile) -> String {
+        get(keyAccount(p)) ?? get(p.id.uuidString) ?? ""
     }
 
     /// 返回是否保存成功（空值即删除）

@@ -11,6 +11,7 @@
 - GUI 应用：读选区 → 流式润色 → 按回填方式（预览 / 自动替换 / 小提示确认）写回。
 - 终端（Terminal.app、Ghostty、iTerm2）：发送 Ctrl+G，由 `polish-edit` 接管整段草稿 → 润色 → 写回输入框，不自动执行或发送。zsh、Claude Code、Codex 均可用。
 - 多套配置（服务商 + Base URL + 模型 + 润色指令 + 额外请求体 JSON），API Key 存在钥匙串。
+- 默认带 6 个场景（⌘1–6）：默认润色、精简、结构化、仅纠错、译成英文、译成中文。不收「扩写 / 补充细节」，因为会凭空添加需求。老用户首次升级时补齐一次，沿用第一套配置的服务连接。
 - 两种协议：OpenAI 兼容（Chat Completions）、Anthropic Messages。附带常见厂商预设。
 - 设置界面：配置、通用、终端集成、权限与隐私。
 
@@ -85,7 +86,7 @@
 ## 6. 权限、密钥与打包
 
 - **权限**：辅助功能（AX 读取、CGEvent 投递）。首次启动时请求授权；未授权时菜单顶部显示警告。全局快捷键（Carbon）不需要权限。
-- **密钥**：传统 login keychain（`kSecClassGenericPassword`，service 为 `Polish`，account 为配置 id）。ad-hoc 签名下不能用 data protection keychain。
+- **密钥**：传统 login keychain（`kSecClassGenericPassword`，service 为 `Polish`，account 为 `base:<Base URL>`，同一服务的场景共用一个 Key；兼容早期按配置 id 存的 Key 并自动迁移）。ad-hoc 签名下不能用 data protection keychain。
 - **其他设置**：配置、回填方式、快捷键存在 UserDefaults。
 - **打包**：`scripts/build-app.sh`。步骤为 `swift build -c release` → 组装 `build/Polish.app`（Info.plist 含 `LSUIElement`）→ 创建 `polish-edit` 符号链接 → `codesign -s -` 做 ad-hoc 签名 → `codesign --verify --strict` 校验。
 - **已知代价**：ad-hoc 签名的身份随每次重建变化，重建后需要重新授予辅助功能权限，钥匙串也可能弹窗确认。

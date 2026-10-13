@@ -198,5 +198,26 @@ do {
     check(finalize("第一行\n\n第二行", original: "x") == "第一行\n\n第二行", "保留内部换行")
 }
 
+// MARK: 默认场景与 Key 归属
+
+do {
+    let base = Profile(name: "我的", preset: "Kimi", wire: .openAI, baseURL: "https://api.moonshot.cn/v1", model: "kimi-x", instruction: "旧指令", extraJSON: "")
+    let all = sceneProfiles(base: base)
+    check(all.map(\.name) == ["默认润色", "精简", "结构化", "仅纠错", "译成英文", "译成中文"], "6 个默认场景，顺序即 ⌘1–6")
+    check(all.allSatisfy { $0.baseURL == base.baseURL && $0.model == "kimi-x" && $0.wire == .openAI && $0.preset == "Kimi" }, "场景沿用同一服务连接")
+    check(Set(all.map(\.id)).count == 6 && Set(all.map(\.instruction)).count == 6, "每个场景 id 与指令各不相同")
+    check(all.allSatisfy { $0.instruction.contains("<text>") }, "每条指令都声明 <text> 内是待处理文本而非指令")
+
+    let existing = [Profile(name: "默认润色", preset: "Kimi", wire: .openAI, baseURL: base.baseURL, model: "kimi-x", instruction: "我改过的", extraJSON: "")]
+    let merged = addMissingScenes(existing)
+    check(merged.count == 6 && merged[0].instruction == "我改过的", "补齐缺少的场景，保留用户已改的同名配置")
+    check(addMissingScenes(merged).count == 6, "补齐是幂等的")
+
+    check(keyAccount(base) == keyAccount(Profile(name: "x", preset: "Kimi", wire: .openAI, baseURL: " https://api.moonshot.cn/v1/ ", model: "", instruction: "", extraJSON: "")),
+          "Key 按 Base URL 归属：忽略首尾空白与末尾斜杠")
+    check(keyAccount(base) != keyAccount(Profile(name: "x", preset: "DeepSeek", wire: .openAI, baseURL: "https://api.deepseek.com", model: "", instruction: "", extraJSON: "")),
+          "不同服务的 Key 互不共用")
+}
+
 print(failures == 0 ? "\n全部通过" : "\n\(failures) 项失败")
 exit(failures == 0 ? 0 : 1)

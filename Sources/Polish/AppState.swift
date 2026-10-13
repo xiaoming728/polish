@@ -43,11 +43,19 @@ final class AppState: ObservableObject {
     init() {
         let dec = JSONDecoder()
         let ps = defaults.data(forKey: "profiles").flatMap { try? dec.decode([Profile].self, from: $0) } ?? []
-        let list = ps.isEmpty ? [defaultProfile()] : ps
+        // 首次启动给出全部默认场景；老用户只补齐一次（之后删掉的场景不再加回来）
+        let seeded = defaults.bool(forKey: "scenesSeeded")
+        let list = ps.isEmpty ? sceneProfiles(base: defaultProfile()) : seeded ? ps : addMissingScenes(ps)
+        defaults.set(true, forKey: "scenesSeeded")
         profiles = list
         currentID = defaults.string(forKey: "currentID").flatMap(UUID.init).flatMap { id in list.contains { $0.id == id } ? id : nil } ?? list[0].id
         fillMode = defaults.string(forKey: "fillMode").flatMap(FillMode.init) ?? .preview
         hotKey = defaults.data(forKey: "hotKey").flatMap { try? dec.decode(HotKeySpec.self, from: $0) } ?? .standard
+        save() // init 中赋值不触发 didSet，补齐的场景要显式保存
+        // 0.0.1 早期按配置 id 存 Key；迁移到按服务归属，补齐的场景才能共用
+        for p in list where Keychain.get(keyAccount(p)) == nil {
+            if let k = Keychain.get(p.id.uuidString) { Keychain.set(keyAccount(p), k) }
+        }
     }
 
     private func save() {
