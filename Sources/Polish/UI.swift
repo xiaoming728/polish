@@ -309,6 +309,11 @@ struct GeneralTab: View {
                 }
                 Text(hint).font(.caption).foregroundStyle(.secondary)
             }
+            Section("输入时中英提示") {
+                Toggle("中文输入法下敲拼音时，在光标上方显示 ⌥1 英文 / ⌥2 中文", isOn: $state.typingAssist)
+                Text("停顿约 0.35 秒后，把正在输入的拼音发给当前配置的模型换算；按 ⌥1 / ⌥2 用所选内容替换刚敲的拼音。只在中文输入法激活时工作；密码框、安全输入和终端中不工作。需要「输入监控」权限。替换时按敲过的键数退格撤销拼音：个别输入法若在组合态吞掉按键，可能多删光标前的字，可用 ⌘Z 撤销。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             Section("回填方式") {
                 Picker("", selection: $state.fillMode) {
                     ForEach(FillMode.allCases, id: \.self) { m in
@@ -411,7 +416,7 @@ struct PermissionTab: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Section("隐私") {
-                Text("只发送本次选中的文字（终端中为当前输入框草稿）；不监听键盘输入；日志不含正文和 Key；API Key 存在钥匙串；临时占用剪贴板后会恢复，期间若被其他程序改动则不恢复。")
+                Text("润色时只发送本次选中的文字（终端中为当前输入框草稿）。开启「输入时中英提示」后，会在中文输入法下读取正在敲的拼音键，并把拼音发给当前配置的模型，可随时在菜单中关闭；日志不含正文和 Key；API Key 存在钥匙串；临时占用剪贴板后会恢复，期间若被其他程序改动则不恢复。")
                     .font(.callout).fixedSize(horizontal: false, vertical: true)
             }
         }.formStyle(.grouped)

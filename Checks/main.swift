@@ -219,5 +219,33 @@ do {
           "不同服务的 Key 互不共用")
 }
 
+// MARK: 输入时中英提示：拼音缓冲与结果解析
+
+do {
+    var b = PinyinBuffer()
+    for c in "ni" { b.feed(.letter(c)) }
+    b.feed(.apostrophe)
+    for c in "Hao" { b.feed(.letter(c)) }
+    check(b.text == "ni'hao", "字母与分隔符累积为拼音串（统一小写）")
+    b.feed(.backspace)
+    check(b.text == "ni'ha", "退格删掉最后一个键")
+    b.feed(.other)
+    check(b.text.isEmpty, "空格 / 回车 / 数字 / 标点 / 方向键等结束本次输入")
+    b.feed(.apostrophe)
+    check(b.text.isEmpty, "开头的分隔符忽略")
+    b.feed(.backspace)
+    check(b.text.isEmpty, "空串退格不出错")
+    for c in "w" { b.feed(.letter(c)) }
+    check(!b.ready, "少于 2 个字母不请求")
+    b.feed(.letter("o"))
+    check(b.ready, "至少 2 个字母才请求")
+
+    check(parseConversion(#"{"en":"Hello world","zh":"你好世界"}"#) == Conversion(en: "Hello world", zh: "你好世界"), "解析 JSON 结果")
+    check(parseConversion("```json\n{\"zh\": \"你好\", \"en\": \"Hello\"}\n```") == Conversion(en: "Hello", zh: "你好"), "容忍代码块包裹")
+    check(parseConversion("好的：{\"en\":\"Hi\",\"zh\":\"嗨\"}") == Conversion(en: "Hi", zh: "嗨"), "容忍前后多余文字")
+    check(parseConversion(#"{"en":"","zh":"你好"}"#) == nil && parseConversion("not json") == nil, "缺字段或非 JSON 返回 nil")
+    check(typingInstruction.contains("<text>") && typingInstruction.contains("\"en\"") && typingInstruction.contains("\"zh\""), "指令约定 JSON 字段 en / zh")
+}
+
 print(failures == 0 ? "\n全部通过" : "\n\(failures) 项失败")
 exit(failures == 0 ? 0 : 1)

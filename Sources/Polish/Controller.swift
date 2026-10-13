@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import Combine
 import PolishCore
 import SwiftUI
 
@@ -52,6 +53,8 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var toastTimer: Timer?
     var toastConfirm = false
     var origin: Origin?
+    lazy var typing = TypingAssist(state: state)
+    var typingSwitch: AnyCancellable?
     var capturing = false // 读选区期间（约 0.3s）再按快捷键会让剪贴板快照拍到哨兵，忽略
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -83,6 +86,11 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do { try server.start() } catch { showToast("终端集成不可用：\(error.localizedDescription)", icon: "exclamationmark.triangle") }
 
         if !Permissions.trusted { Permissions.prompt() }
+        syncTypingAssist()
+        // 菜单或设置里切换开关都只改状态，这里统一启停（$ 发布的是 willSet，延后一拍读新值）
+        typingSwitch = state.$typingAssist.dropFirst().sink { [weak self] _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.syncTypingAssist() } }
+        }
     }
 
     // MARK: 菜单
@@ -128,9 +136,24 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             fill.submenu!.addItem(ActionItem(m.rawValue, on: m == state.fillMode) { [weak self] in self?.state.fillMode = m })
         }
         menu.addItem(fill)
+        menu.addItem(ActionItem("输入时中英提示（⌥1 英文 / ⌥2 中文）", on: state.typingAssist) { [weak self] in
+            self?.state.typingAssist.toggle()
+        })
         menu.addItem(ActionItem("设置…", key: ",") { [weak self] in self?.openSettings() })
         menu.addItem(.separator())
         menu.addItem(ActionItem("退出 Polish", key: "q") { NSApp.terminate(nil) })
+    }
+
+    /// 按开关启停输入监听；缺少权限时提示（辅助功能或输入监控）
+    func syncTypingAssist() {
+        typing.isBusy = { [weak self] in self?.origin != nil || self?.polisher.busy == true }
+        if state.typingAssist {
+            if !typing.start() {
+                showToast("输入时中英提示需要「输入监控」权限：系统设置 → 隐私与安全性 → 输入监控 → 打开 Polish，然后重启 Polish", icon: "keyboard", seconds: 6)
+            }
+        } else {
+            typing.stop()
+        }
     }
 
     // MARK: 流程

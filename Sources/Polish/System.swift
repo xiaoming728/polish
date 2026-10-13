@@ -15,13 +15,31 @@ struct HotKeySpec: Codable, Equatable {
 enum HotKey {
     nonisolated(unsafe) static var handler: (() -> Void)?
     nonisolated(unsafe) static var ref: EventHotKeyRef?
+    /// 临时热键（id ≥ 2），如输入提示显示时的 ⌥1 / ⌥2
+    nonisolated(unsafe) static var extra: [UInt32: (ref: EventHotKeyRef, run: () -> Void)] = [:]
 
     static func install() {
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-            DispatchQueue.main.async { HotKey.handler?() }
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
+            var hk = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                              MemoryLayout<EventHotKeyID>.size, nil, &hk)
+            let id = hk.id
+            DispatchQueue.main.async { id == 1 ? HotKey.handler?() : HotKey.extra[id]?.run() }
             return noErr
         }, 1, &spec, nil, nil)
+    }
+
+    static func registerExtra(_ id: UInt32, code: Int, mods: Int, _ run: @escaping () -> Void) {
+        unregisterExtra(id)
+        var r: EventHotKeyRef?
+        if RegisterEventHotKey(UInt32(code), UInt32(mods), EventHotKeyID(signature: 0x504C_5348, id: id), GetApplicationEventTarget(), 0, &r) == noErr, let r {
+            extra[id] = (r, run)
+        }
+    }
+
+    static func unregisterExtra(_ id: UInt32) {
+        if let e = extra.removeValue(forKey: id) { UnregisterEventHotKey(e.ref) }
     }
 
     /// 注册失败（多为被其他应用占用）返回 false，且不保留任何注册
@@ -43,12 +61,16 @@ enum HotKey {
 // MARK: - 合成按键
 
 enum Keys {
+    /// 标记本 app 合成的按键，事件监听据此忽略
+    static let marker: Int64 = 0x504C_5348
+
     /// privateState 事件源 + 显式 flags：用户此时可能还按着 ⌥，不能让它混进投递的按键
     static func post(_ key: Int, _ flags: CGEventFlags) {
         let src = CGEventSource(stateID: .privateState)
         for down in [true, false] {
             let e = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(key), keyDown: down)
             e?.flags = flags
+            e?.setIntegerValueField(.eventSourceUserData, value: marker)
             e?.post(tap: .cghidEventTap)
         }
     }
@@ -104,9 +126,16 @@ struct Captured {
 enum Selection {
     static var enabledPids = Set<pid_t>()
 
+    /// AX 调用最多等 0.25s：目标应用无响应时不能拖住主线程（输入提示、快捷键都在主线程）
+    static let systemWide: AXUIElement = {
+        let e = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(e, 0.25)
+        return e
+    }()
+
     static func focusedElement() -> AXUIElement? {
         var v: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute as CFString, &v) == .success,
+        guard AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &v) == .success,
               let v, CFGetTypeID(v) == AXUIElementGetTypeID() else { return nil }
         return (v as! AXUIElement)
     }
@@ -150,6 +179,29 @@ enum Selection {
         guard AXValueGetValue(v as! AXValue, .cgRect, &r), r.width > 0 || r.height > 0 else { return nil }
         let h = NSScreen.screens.first?.frame.height ?? 0
         return CGRect(x: r.minX, y: h - r.maxY, width: r.width, height: r.height)
+    }
+
+    /// 光标（插入点）的屏幕矩形：有选区用选区；否则取光标前一个字符的矩形，贴在其右侧
+    static func caretRect(_ el: AXUIElement) -> CGRect? {
+        var r: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, &r) == .success, let r,
+              CFGetTypeID(r) == AXValueGetTypeID() else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(r as! AXValue, .cfRange, &range) else { return nil }
+        if range.length > 0 { return bounds(el) }
+        for probe in [CFRange(location: range.location, length: 0), CFRange(location: max(range.location - 1, 0), length: 1)] {
+            var p = probe
+            guard let pv = AXValueCreate(.cfRange, &p) else { continue }
+            var v: CFTypeRef?
+            guard AXUIElementCopyParameterizedAttributeValue(el, kAXBoundsForRangeParameterizedAttribute as CFString, pv, &v) == .success,
+                  let v, CFGetTypeID(v) == AXValueGetTypeID() else { continue }
+            var b = CGRect.zero
+            guard AXValueGetValue(v as! AXValue, .cgRect, &b), b.height > 0 else { continue }
+            let h = NSScreen.screens.first?.frame.height ?? 0
+            let x = probe.length == 1 ? b.maxX : b.minX
+            return CGRect(x: x, y: h - b.maxY, width: 1, height: b.height)
+        }
+        return nil
     }
 
     /// 哨兵法：剪贴板仍是哨兵即视为没有选区；结束后恢复原剪贴板

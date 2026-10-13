@@ -30,6 +30,8 @@ final class AppState: ObservableObject {
     @Published var currentID: UUID { didSet { save() } }
     @Published var fillMode: FillMode { didSet { save() } }
     @Published var hotKey: HotKeySpec { didSet { save() } }
+    /// 输入时中英提示（中文输入法下敲拼音时显示 ⌥1 英文 / ⌥2 中文）
+    @Published var typingAssist: Bool { didSet { save() } }
 
     @Published var source = ""
     @Published var output = ""
@@ -51,6 +53,7 @@ final class AppState: ObservableObject {
         currentID = defaults.string(forKey: "currentID").flatMap(UUID.init).flatMap { id in list.contains { $0.id == id } ? id : nil } ?? list[0].id
         fillMode = defaults.string(forKey: "fillMode").flatMap(FillMode.init) ?? .preview
         hotKey = defaults.data(forKey: "hotKey").flatMap { try? dec.decode(HotKeySpec.self, from: $0) } ?? .standard
+        typingAssist = defaults.object(forKey: "typingAssist") as? Bool ?? true
         save() // init 中赋值不触发 didSet，补齐的场景要显式保存
         // 0.0.1 早期按配置 id 存 Key；迁移到按服务归属，补齐的场景才能共用
         for p in list where Keychain.get(keyAccount(p)) == nil {
@@ -64,5 +67,6 @@ final class AppState: ObservableObject {
         defaults.set(currentID.uuidString, forKey: "currentID")
         defaults.set(fillMode.rawValue, forKey: "fillMode")
         defaults.set(try? enc.encode(hotKey), forKey: "hotKey")
+        defaults.set(typingAssist, forKey: "typingAssist")
     }
 }
