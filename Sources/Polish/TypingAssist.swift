@@ -33,7 +33,10 @@ final class TypingAssist {
     init(state: AppState) {
         self.state = state
         panel.contentView = NSHostingView(rootView: TypingHintView(model: model))
-        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
+            // 只在切到普通应用时重置；钥匙串确认框（SecurityAgent）、输入法候选窗等后台进程被激活不算换应用
+            let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            guard app?.activationPolicy == .regular else { return }
             MainActor.assumeIsolated { self?.reset() }
         }
     }

@@ -1,5 +1,5 @@
 #!/bin/sh
-# 构建 build/Polish.app 并 ad-hoc 签名。用法：scripts/build-app.sh [--install]
+# 构建 build/Polish.app 并签名（有本地证书用证书，否则 ad-hoc）。用法：scripts/build-app.sh [--install]
 #   --install  复制到 /Applications（终端集成片段里的 polish-edit 路径随 .app 位置而定）
 set -eu
 cd "$(dirname "$0")/.."
@@ -34,13 +34,21 @@ cat > "$APP/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-codesign --force --sign - "$APP"
+# 有本地签名证书（scripts/make-signing-cert.sh）就用它：身份固定，重建后不必重新授予辅助功能 / 输入监控 / 钥匙串
+IDENTITY="Polish Local Signing"
+if security find-identity -p codesigning 2>/dev/null | grep -q "\"$IDENTITY\""; then
+    codesign --force --sign "$IDENTITY" "$APP"
+    KIND="本地证书签名"
+else
+    codesign --force --sign - "$APP"
+    KIND="ad-hoc 签名，重建后需重新授权"
+fi
 codesign --verify --strict --verbose=2 "$APP"
-echo "✓ ${APP}（${VERSION}，ad-hoc 签名）"
+echo "✓ ${APP}（${VERSION}，${KIND}）"
 
 if [ "${1:-}" = "--install" ]; then
     pkill -x Polish 2>/dev/null || true
     rm -rf /Applications/Polish.app
     cp -R "$APP" /Applications/Polish.app
-    echo "✓ 已安装到 /Applications/Polish.app。重建后需在 系统设置 → 隐私与安全性 → 辅助功能 中重新授权。"
+    echo "✓ 已安装到 /Applications/Polish.app"
 fi

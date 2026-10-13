@@ -201,7 +201,19 @@ enum Selection {
             let x = probe.length == 1 ? b.maxX : b.minX
             return CGRect(x: x, y: h - b.maxY, width: 1, height: b.height)
         }
-        return nil
+        return firstLine(el) // 空输入框（或输入法组合态下）没有可测量的字符：退回输入框第一行
+    }
+
+    /// 输入框左上角的一行高矩形（Cocoa 坐标）
+    static func firstLine(_ el: AXUIElement) -> CGRect? {
+        var pv: CFTypeRef?, sv: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXPositionAttribute as CFString, &pv) == .success, let pv,
+              AXUIElementCopyAttributeValue(el, kAXSizeAttribute as CFString, &sv) == .success, let sv else { return nil }
+        var pos = CGPoint.zero, size = CGSize.zero
+        guard AXValueGetValue(pv as! AXValue, .cgPoint, &pos), AXValueGetValue(sv as! AXValue, .cgSize, &size), size.height > 0 else { return nil }
+        let line = min(size.height, 20)
+        let h = NSScreen.screens.first?.frame.height ?? 0
+        return CGRect(x: pos.x + 4, y: h - pos.y - line - 4, width: 1, height: line)
     }
 
     /// 哨兵法：剪贴板仍是哨兵即视为没有选区；结束后恢复原剪贴板
@@ -344,14 +356,22 @@ enum Keychain {
         return String(data: d, encoding: .utf8)
     }
 
+    /// 内存缓存：ad-hoc 签名重建后读钥匙串会弹系统确认框，每次启动最多弹一次
+    nonisolated(unsafe) static var cache: [String: String] = [:]
+
     /// 配置用的 Key：按服务归属；兼容 0.0.1 早期按配置 id 存的 Key
     static func apiKey(_ p: Profile) -> String {
-        get(keyAccount(p)) ?? get(p.id.uuidString) ?? ""
+        let account = keyAccount(p)
+        if let k = cache[account] { return k }
+        let k = get(account) ?? get(p.id.uuidString) ?? ""
+        if !k.isEmpty { cache[account] = k }
+        return k
     }
 
     /// 返回是否保存成功（空值即删除）
     @discardableResult
     static func set(_ account: String, _ value: String) -> Bool {
+        cache[account] = value.isEmpty ? nil : value
         SecItemDelete(query(account) as CFDictionary)
         guard !value.isEmpty else { return true }
         var q = query(account)
