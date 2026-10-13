@@ -372,3 +372,24 @@ enum Permissions {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
 }
+
+// MARK: - 运行日志（~/Library/Logs/Polish/polish.log；只记状态与长度，不记正文和拼音内容）
+
+enum Log {
+    static let url: URL = {
+        let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0].appendingPathComponent("Logs/Polish")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("polish.log")
+    }()
+
+    static func write(_ msg: String) {
+        let line = "\(ISO8601DateFormatter().string(from: Date())) \(msg)\n"
+        guard let h = try? FileHandle(forWritingTo: url) else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
+            return
+        }
+        h.seekToEndOfFile()
+        h.write(Data(line.utf8))
+        try? h.close()
+    }
+}

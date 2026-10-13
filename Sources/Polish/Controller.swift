@@ -55,6 +55,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var origin: Origin?
     lazy var typing = TypingAssist(state: state)
     var typingSwitch: AnyCancellable?
+    var typingRetry: Timer?
     var capturing = false // 读选区期间（约 0.3s）再按快捷键会让剪贴板快照拍到哨兵，忽略
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -85,6 +86,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         do { try server.start() } catch { showToast("终端集成不可用：\(error.localizedDescription)", icon: "exclamationmark.triangle") }
 
+        Log.write("launch trusted=\(Permissions.trusted) listenAccess=\(CGPreflightListenEventAccess())")
         if !Permissions.trusted { Permissions.prompt() }
         syncTypingAssist()
         // 菜单或设置里切换开关都只改状态，这里统一启停（$ 发布的是 willSet，延后一拍读新值）
@@ -147,9 +149,22 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 按开关启停输入监听；缺少权限时提示（辅助功能或输入监控）
     func syncTypingAssist() {
         typing.isBusy = { [weak self] in self?.origin != nil || self?.polisher.busy == true }
+        typingRetry?.invalidate()
+        typingRetry = nil
         if state.typingAssist {
-            if !typing.start() {
-                showToast("输入时中英提示需要「输入监控」权限：系统设置 → 隐私与安全性 → 输入监控 → 打开 Polish，然后重启 Polish", icon: "keyboard", seconds: 6)
+            let ok = typing.start()
+            Log.write("typing-assist start ok=\(ok)")
+            guard !ok else { return }
+            showToast("输入时中英提示需要「输入监控」权限：系统设置 → 隐私与安全性 → 输入监控 → 打开 Polish", icon: "keyboard", seconds: 6)
+            // 授权后自动生效，不用重启
+            typingRetry = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] t in
+                MainActor.assumeIsolated {
+                    guard let self, self.state.typingAssist else { t.invalidate(); return }
+                    if CGPreflightListenEventAccess(), self.typing.start() {
+                        Log.write("typing-assist start ok=true (after grant)")
+                        t.invalidate()
+                    }
+                }
             }
         } else {
             typing.stop()

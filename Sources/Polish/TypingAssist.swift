@@ -44,6 +44,11 @@ final class TypingAssist {
     @discardableResult
     func start() -> Bool {
         guard tap == nil else { return true }
+        // 没有「输入监控」权限时 listen-only tap 也能创建，但收不到任何按键：先检查，避免静默失效
+        guard CGPreflightListenEventAccess() else {
+            CGRequestListenEventAccess()
+            return false
+        }
         let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.leftMouseDown.rawValue) | (1 << CGEventType.rightMouseDown.rawValue)
         guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .tailAppendEventTap, options: .listenOnly,
                                         eventsOfInterest: CGEventMask(mask), callback: { _, type, event, info in
@@ -162,6 +167,7 @@ final class TypingAssist {
         var p = state.current
         p.instruction = typingInstruction
         let key = Keychain.apiKey(p)
+        Log.write("typing convert len=\(pinyin.count)")
         model.pinyin = pinyin
         model.result = nil
         model.error = key.isEmpty && !["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "") ? "未配置 API Key（⌥P 菜单 → 设置）" : nil
@@ -176,6 +182,7 @@ final class TypingAssist {
                 self.model.error = e.localizedDescription
             }
             self.show()
+            Log.write("typing result ok=\(self.model.result != nil) error=\(self.model.error ?? "-") frame=\(self.panel.frame)")
             // 只有出结果时才占用 ⌥1 / ⌥2；其余时间不影响它们原本的输入
             if self.model.result != nil {
                 HotKey.registerExtra(2, code: kVK_ANSI_1, mods: optionKey) { [weak self] in self?.choose(english: true) }
@@ -195,6 +202,7 @@ final class TypingAssist {
     /// 光标上方（输入法候选窗通常在下方）；取不到光标位置时放在鼠标上方
     private func origin(for size: NSSize) -> NSPoint {
         let caret = Selection.focusedElement().flatMap(Selection.caretRect)
+        Log.write("typing anchor=\(caret == nil ? "mouse" : "caret")")
         let anchor = caret ?? CGRect(origin: NSEvent.mouseLocation, size: .zero)
         let screen = NSScreen.screens.first { $0.frame.contains(anchor.origin) } ?? NSScreen.main!
         let vf = screen.visibleFrame
@@ -213,6 +221,7 @@ final class TypingAssist {
         }
         let text = english ? r.en : r.zh
         let count = buffer.text.count
+        Log.write("typing choose english=\(english) backspaces=\(count) len=\(text.count)")
         reset()
         choosing = true
         Task {
