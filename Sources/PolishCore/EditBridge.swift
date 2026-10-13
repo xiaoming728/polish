@@ -120,7 +120,6 @@ public final class EditServer {
     private var armTimer: DispatchWorkItem?
     private var armed = false
 
-    public var hasClient: Bool { client >= 0 }
 
     public func start() throws {
         try FileManager.default.createDirectory(at: Paths.support, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -157,7 +156,7 @@ public final class EditServer {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: w)
     }
 
-    public func disarm() {
+    private func disarm() {
         armed = false
         armTimer?.cancel()
     }
