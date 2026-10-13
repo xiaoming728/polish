@@ -52,6 +52,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var toastTimer: Timer?
     var toastConfirm = false
     var origin: Origin?
+    var capturing = false // 读选区期间（约 0.3s）再按快捷键会让剪贴板快照拍到哨兵，忽略
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -116,6 +117,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: 流程
 
     func trigger() {
+        if capturing { return }
         if polisher.busy {
             cancel()
             return
@@ -136,8 +138,11 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             server.arm()
             Keys.ctrlG()
         } else {
+            capturing = true
             Task {
-                guard let c = await Selection.capture() else {
+                let c = await Selection.capture()
+                capturing = false
+                guard let c else {
                     showToast("请先选中要润色的文字", icon: "exclamationmark.circle")
                     return
                 }
@@ -160,8 +165,11 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 1.5s 内没有 polish-edit 连上：降级为「润色终端选区后复制」
     func terminalTimeout() {
+        capturing = true
         Task {
-            if let c = await Selection.capture() {
+            let c = await Selection.capture()
+            capturing = false
+            if let c {
                 state.source = c.text
                 state.target = "\(c.appName) · 选区（仅复制）"
                 begin(.copyOnly(c.bounds))
@@ -188,7 +196,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         state.phase = .streaming
         let p = state.current
         let key = Keychain.get(p.id.uuidString) ?? ""
-        let local = p.baseURL.contains("localhost") || p.baseURL.contains("127.0.0.1")
+        let local = ["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "")
         if key.isEmpty && !local {
             fail("配置「\(p.name)」还没有填写 API Key。按 ⌘, 打开设置。")
             return
@@ -229,16 +237,22 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let text = state.output
         switch o {
         case .terminal:
-            server.reply(.ok(Data(text.utf8)))
+            let delivered = server.reply(.ok(Data(text.utf8)))
             endSession()
-            showToast("已写回输入框（未发送）", icon: "checkmark.circle.fill")
+            if delivered {
+                showToast("已写回输入框（未发送）", icon: "checkmark.circle.fill")
+            } else {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                showToast("写回失败：polish-edit 已退出。结果已复制到剪贴板", icon: "exclamationmark.triangle", seconds: 4)
+            }
         case .copyOnly:
             copyResult()
         case .gui(let c):
             hidePanel()
             hideToast()
             Task {
-                await sleepMs(60) // 让焦点回到目标窗口
+                await sleepMs(c.source == .copy ? 150 : 60) // 让焦点回到目标窗口；⌘C 重读需要目标窗口已恢复 key
                 let same = NSWorkspace.shared.frontmostApplication?.processIdentifier == c.pid
                 let now = same ? await Selection.reread(c) : nil
                 guard now == c.text else {

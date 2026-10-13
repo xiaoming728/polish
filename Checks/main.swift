@@ -45,13 +45,17 @@ if CommandLine.arguments.dropFirst().first == "serve" {
     dispatchMain()
 }
 
+nonisolated(unsafe) var stash: AnyObject?
+
 // core-checks stream <openAI|anthropic> <baseURL>：真实 URLSession 流式请求，供 scripts/stream-e2e.py 对照模拟服务端
 if CommandLine.arguments.dropFirst().first == "stream" {
     let a = CommandLine.arguments
     let p = Profile(name: "e2e", preset: "e2e", wire: Wire(rawValue: a[2])!, baseURL: a[3], model: "m", instruction: "润色", extraJSON: "")
     MainActor.assumeIsolated {
         var deltas = 0
-        Polisher().start(p, apiKey: "k", text: "原文", onDelta: { _ in deltas += 1 }, onDone: { r in
+        let polisher = Polisher() // 与 app 一样必须持有：start() 内部只弱引用自身
+        stash = polisher
+        polisher.start(p, apiKey: "k", text: "原文", onDelta: { _ in deltas += 1 }, onDone: { r in
             switch r {
             case .success(let s): print("OK deltas=\(deltas) \(s)")
             case .failure(let e): print("ERR \(e.localizedDescription)")

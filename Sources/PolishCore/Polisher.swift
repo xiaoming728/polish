@@ -1,6 +1,10 @@
 import Foundation
 
-final class Flag: @unchecked Sendable { var value = false }
+/// 看门狗与流之间共享的超时状态（只在主线程读写）
+final class Watch: @unchecked Sendable {
+    var gotFirst = false
+    var reason: String?
+}
 
 public struct PolishError: LocalizedError {
     public let message: String
@@ -13,6 +17,7 @@ public struct PolishError: LocalizedError {
 public final class Polisher {
     public init() {}
     private var task: Task<Void, Never>?
+    private var generation = 0
     public var busy: Bool { task != nil }
 
     public func cancel() {
@@ -23,22 +28,35 @@ public final class Polisher {
     public func start(_ p: Profile, apiKey: String, text: String,
                onDelta: @escaping (String) -> Void, onDone: @escaping (Result<String, Error>) -> Void) {
         cancel()
+        generation += 1
+        let gen = generation
+        let watch = Watch()
         task = Task { [weak self] in
-            let timedOut = Flag()
-            let total = Task { // 总时长看门狗
-                try? await Task.sleep(nanoseconds: 120_000_000_000)
-                if !Task.isCancelled { timedOut.value = true; self?.task?.cancel() }
+            // 首字 30s 按「收到第一段正文」计，不受 SSE 保活注释行影响；总计 120s
+            let dog = Task {
+                let begin = Date()
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    let t = Date().timeIntervalSince(begin)
+                    if !watch.gotFirst && t > 30 { watch.reason = "超时：30 秒内没有收到模型的第一个字。原文未改动。" }
+                    if t > 120 { watch.reason = "超时：超过 120 秒仍未完成。原文未改动。" }
+                    if watch.reason != nil, !Task.isCancelled { self?.task?.cancel(); return }
+                }
             }
-            defer { total.cancel() }
+            defer { dog.cancel() }
             do {
-                let out = try await Self.stream(p, apiKey: apiKey, text: text, onDelta: onDelta)
+                let out = try await Self.stream(p, apiKey: apiKey, text: text) { s in
+                    watch.gotFirst = true
+                    guard self?.generation == gen else { return } // 已被新请求取代：丢弃旧流的增量
+                    onDelta(s)
+                }
                 guard !Task.isCancelled else { return }
                 self?.task = nil
                 onDone(.success(out))
             } catch {
-                if timedOut.value {
+                if let reason = watch.reason {
                     self?.task = nil
-                    onDone(.failure(PolishError(message: "超时：超过 120 秒仍未完成。原文未改动。")))
+                    onDone(.failure(PolishError(message: reason)))
                     return
                 }
                 guard !Task.isCancelled else { return } // 用户取消：不回调
@@ -51,7 +69,7 @@ public final class Polisher {
     public static func describe(_ error: Error) -> Error {
         guard let u = error as? URLError else { return error }
         switch u.code {
-        case .timedOut: return PolishError(message: "超时：30 秒内没有收到模型响应。原文未改动。")
+        case .timedOut: return PolishError(message: "超时：长时间没有收到模型数据。原文未改动。")
         case .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost:
             return PolishError(message: "网络错误：\(u.localizedDescription)")
         default: return PolishError(message: u.localizedDescription)
@@ -60,7 +78,7 @@ public final class Polisher {
 
     public static func stream(_ p: Profile, apiKey: String, text: String, onDelta: @escaping (String) -> Void) async throws -> String {
         var req = try makeRequest(p, apiKey: apiKey, text: text)
-        req.timeoutInterval = 30
+        req.timeoutInterval = 120 // 空闲超时兜底；首字与总时长由 start() 的看门狗控制
         let (bytes, resp) = try await URLSession.shared.bytes(for: req)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {

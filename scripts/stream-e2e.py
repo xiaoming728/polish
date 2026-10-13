@@ -1,5 +1,5 @@
 # 流式请求端到端：本地模拟 OpenAI 兼容 / Anthropic SSE 服务端，用 core-checks stream 走真实 URLSession。
-# 用法：swift build && python3 -I scripts/stream-e2e.py
+# 用法：swift build && python3 -I scripts/stream-e2e.py [--slow]（--slow 额外跑约 30 秒的首字超时用例）
 import http.server, json, os, subprocess, sys, threading, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -46,6 +46,18 @@ class H(http.server.BaseHTTPRequestHandler):
             self.wfile.write(payload)
         elif case == "empty":
             self.sse(["data: [DONE]"])
+        elif case == "keepalive":  # 只有保活注释行、没有正文：应在首字 30s 时超时
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            try:
+                for _ in range(20):  # 每 2s 一行保活，持续 40s
+                    self.wfile.write(b"e\r\n: keep-alive\n\n\r\n")
+                    self.wfile.flush()
+                    time.sleep(2)
+            except OSError:
+                pass  # 客户端超时断开
         elif case == "midstream":
             self.sse(['data: {"choices":[{"delta":{"content":"半"}}]}', 'data: {"error":{"message":"overloaded"}}'])
 
@@ -57,7 +69,7 @@ base = f"http://127.0.0.1:{srv.server_address[1]}"
 
 def run(wire, case):
     path = f"{base}/{case}" + ("/v1" if wire == "openAI" else "")
-    out = subprocess.run([f"{BIN}/core-checks", "stream", wire, path], capture_output=True, text=True, timeout=20).stdout.strip()
+    out = subprocess.run([f"{BIN}/core-checks", "stream", wire, path], capture_output=True, text=True, timeout=60).stdout.strip()
     return out
 
 
@@ -82,6 +94,11 @@ o = run("openAI", "empty")
 check(o.startswith("ERR 模型没有返回内容"), "空响应报错", o)
 o = run("openAI", "midstream")
 check(o == "ERR 模型返回错误：overloaded", "流内错误", o)
+
+if "--slow" in sys.argv:
+    t = time.time()
+    o = run("openAI", "keepalive")
+    check(o.startswith("ERR 超时：30 秒内没有收到模型的第一个字") and 29 < time.time() - t < 40, "只有保活行：首字 30s 超时", f"{o}（{time.time() - t:.0f}s）")
 
 print(f"\n{sum(results)}/{len(results)} 通过")
 sys.exit(0 if all(results) else 1)

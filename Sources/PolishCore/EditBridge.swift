@@ -42,7 +42,7 @@ func writeAll(_ fd: Int32, _ data: Data) -> Bool {
 
 public enum EditClient {
     /// 被 zsh / Claude Code / Codex 当作 $VISUAL 调用：把草稿交给 app，等待结果。
-    /// 只有收到 OK 才写文件；取消、app 退出、出错一律不改文件并 exit 0。
+    /// 只有收到 OK 才写文件；取消、app 退出、协议出错一律不改文件并 exit 0。写文件失败时 exit 1，让调用方能看到错误。
     public static func run(_ path: String?) -> Never {
         guard let path else {
             fputs("用法：polish-edit <file>\n", stderr)
@@ -50,9 +50,16 @@ public enum EditClient {
         }
         signal(SIGPIPE, SIG_IGN)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0, withUnixAddress(Paths.socket, { connect(fd, $0, $1) }) == 0 else { fallback(path) } // app 未运行
+        guard fd >= 0 else { fallback(path) }
+        guard withUnixAddress(Paths.socket, { connect(fd, $0, $1) }) == 0 else { // app 未运行
+            close(fd) // 不把 socket 泄漏给原编辑器
+            fallback(path)
+        }
         let draft = (try? Data(contentsOf: URL(fileURLWithPath: path))) ?? Data()
-        guard writeAll(fd, encode(.edit(draft))) else { fallback(path) }
+        guard writeAll(fd, encode(.edit(draft))) else {
+            close(fd)
+            fallback(path)
+        }
         var reader = FrameReader()
         var buf = [UInt8](repeating: 0, count: 65536)
         while true {
@@ -62,7 +69,12 @@ public enum EditClient {
                     close(fd)
                     fallback(path) // 不是 app 触发 / 晚到 / 并发
                 case .ok(let body)?:
-                    try? body.write(to: URL(fileURLWithPath: path)) // 非原子写：原地覆盖
+                    do {
+                        try body.write(to: URL(fileURLWithPath: path)) // 非原子写：原地覆盖，保留 inode
+                    } catch {
+                        fputs("polish-edit: 写回失败：\(error.localizedDescription)\n", stderr)
+                        exit(1)
+                    }
                     exit(0)
                 case .cancel?, .edit?:
                     exit(0)
@@ -113,10 +125,18 @@ public final class EditServer {
     public func start() throws {
         try FileManager.default.createDirectory(at: Paths.support, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let path = Paths.socket
-        unlink(path)
+        // 能连上说明已有实例在监听：不抢它的 socket
+        let probe = socket(AF_UNIX, SOCK_STREAM, 0)
+        let alive = withUnixAddress(path, { connect(probe, $0, $1) }) == 0
+        close(probe)
+        if alive { throw NSError(domain: "Polish", code: 1, userInfo: [NSLocalizedDescriptionKey: "已有另一个 Polish 在运行"]) }
+        unlink(path) // 上次崩溃留下的旧 socket 文件
         listenFD = socket(AF_UNIX, SOCK_STREAM, 0)
         guard listenFD >= 0, withUnixAddress(path, { bind(listenFD, $0, $1) }) == 0, listen(listenFD, 8) == 0 else {
-            throw NSError(domain: "Polish", code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "无法监听 \(path)：\(String(cString: strerror(errno)))"])
+            let err = NSError(domain: "Polish", code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "无法监听 \(path)：\(String(cString: strerror(errno)))"])
+            if listenFD >= 0 { close(listenFD) }
+            listenFD = -1
+            throw err
         }
         chmod(path, 0o600)
         let src = DispatchSource.makeReadSource(fileDescriptor: listenFD, queue: .main)
@@ -125,7 +145,7 @@ public final class EditServer {
         acceptSource = src
     }
 
-    public func arm(seconds: Double = 1.5) {
+    public func arm() {
         armTimer?.cancel()
         armed = true
         let w = DispatchWorkItem { [weak self] in
@@ -134,7 +154,7 @@ public final class EditServer {
             self.onTimeout?()
         }
         armTimer = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: w)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: w)
     }
 
     public func disarm() {
@@ -142,10 +162,13 @@ public final class EditServer {
         armTimer?.cancel()
     }
 
-    public func reply(_ m: EditMessage) {
-        guard client >= 0 else { return }
-        writeAll(client, encode(m))
+    /// 返回是否送达；失败说明 polish-edit 已经退出
+    @discardableResult
+    public func reply(_ m: EditMessage) -> Bool {
+        guard client >= 0 else { return false }
+        let ok = writeAll(client, encode(m))
         closeClient()
+        return ok
     }
 
     private func acceptOne() {
@@ -153,8 +176,8 @@ public final class EditServer {
         guard fd >= 0 else { return }
         var nosig: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &nosig, socklen_t(MemoryLayout<Int32>.size))
-        var tv = timeval(tv_sec: 1, tv_usec: 0) // polish-edit 连上后立即发送 EDIT，1s 读不到就放弃
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        // polish-edit 连上后立即发送 EDIT：整个读取最多 1s，避免慢速连接拖住主线程
+        let deadline = Date().addingTimeInterval(1)
         var reader = FrameReader()
         var buf = [UInt8](repeating: 0, count: 65536)
         var draft: Data?
@@ -163,6 +186,9 @@ public final class EditServer {
             do { m = try reader.next() } catch { close(fd); return }
             if case .edit(let d)? = m { draft = d; break }
             if m != nil { close(fd); return } // 只接受 EDIT
+            var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let left = Int32(max(0, deadline.timeIntervalSinceNow * 1000))
+            guard left > 0, poll(&pfd, 1, left) > 0 else { close(fd); return }
             let n = read(fd, &buf, buf.count)
             if n <= 0 { close(fd); return }
             reader.append(Data(buf[0..<n]))

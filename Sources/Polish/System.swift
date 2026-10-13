@@ -58,6 +58,7 @@ enum Keys {
 
 // MARK: - 剪贴板快照
 
+/// shortcut: 只保存各类型的现成数据，文件 promise 等延迟提供的类型恢复后会丢失；润色只涉及文本，需要时再升级
 struct ClipboardSnapshot {
     let items: [[NSPasteboard.PasteboardType: Data]]
 
@@ -79,6 +80,8 @@ struct ClipboardSnapshot {
     }
 }
 
+let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
+
 func sleepMs(_ ms: UInt64) async { try? await Task.sleep(nanoseconds: ms * 1_000_000) }
 
 // MARK: - 选区读取（AX 优先，⌘C 兜底）
@@ -89,6 +92,7 @@ struct Captured {
     let source: Source
     let pid: pid_t
     let appName: String
+    let role: String? // 焦点元素的 AX role，回填前辅助校验
     let bounds: CGRect? // Cocoa 坐标
 }
 
@@ -103,15 +107,29 @@ enum Selection {
         return (v as! AXUIElement)
     }
 
+    static func role(_ el: AXUIElement) -> String? {
+        var v: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &v) == .success else { return nil }
+        return v as? String
+    }
+
     static func axSelectedText(_ el: AXUIElement) -> String? {
         var v: CFTypeRef?
         guard AXUIElementCopyAttributeValue(el, kAXSelectedTextAttribute as CFString, &v) == .success else { return nil }
         return v as? String
     }
 
+    /// 只对 Chromium / Electron 应用打开网页无障碍：AXEnhancedUserInterface 对其他应用有副作用（窗口动画、frame 读错）
+    static func isChromiumOrElectron(_ app: NSRunningApplication) -> Bool {
+        guard let url = app.bundleURL?.appendingPathComponent("Contents/Frameworks"),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: url.path) else { return false }
+        return names.contains { $0.hasSuffix(".framework") && ($0.contains("Electron") || $0.contains("Chrom") || $0.contains("Edge") || $0.contains("Brave") || $0.hasPrefix("Arc")) }
+    }
+
     /// Chromium 只认 AXEnhancedUserInterface，Electron 用 AXManualAccessibility；生效有约 2s 防抖，所以本次仍走 ⌘C
-    static func enableAX(_ pid: pid_t) {
-        guard enabledPids.insert(pid).inserted else { return }
+    static func enableAX(_ app: NSRunningApplication) {
+        let pid = app.processIdentifier
+        guard isChromiumOrElectron(app), enabledPids.insert(pid).inserted else { return }
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
         AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
@@ -136,19 +154,24 @@ enum Selection {
         let snap = ClipboardSnapshot.take()
         let sentinel = "polish-sentinel-\(UUID().uuidString)"
         pb.clearContents()
-        pb.setString(sentinel, forType: .string)
+        let item = NSPasteboardItem()
+        item.setString(sentinel, forType: .string)
+        item.setData(Data(), forType: transientType) // 剪贴板管理器不记录哨兵
+        pb.writeObjects([item])
         let start = pb.changeCount
         Keys.copy()
         var text: String?
+        var seen = start
         for _ in 0..<15 {
             await sleepMs(20)
             if pb.changeCount != start {
                 await sleepMs(30) // 有的应用分多次写入剪贴板
                 text = pb.string(forType: .string)
+                seen = pb.changeCount
                 break
             }
         }
-        snap.restore()
+        if pb.changeCount == seen { snap.restore() } // 期间被用户或其他程序改过就不恢复
         guard let t = text, t != sentinel, !t.isEmpty else { return nil }
         return t
     }
@@ -157,23 +180,23 @@ enum Selection {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
         let pid = app.processIdentifier
         let name = app.localizedName ?? "前台应用"
-        if let el = focusedElement() {
-            if let t = axSelectedText(el), !t.isEmpty {
-                return Captured(text: t, source: .ax, pid: pid, appName: name, bounds: bounds(el))
-            }
-            enableAX(pid)
-        } else {
-            enableAX(pid)
+        let el = focusedElement()
+        if let el, let t = axSelectedText(el), !t.isEmpty {
+            return Captured(text: t, source: .ax, pid: pid, appName: name, role: role(el), bounds: bounds(el))
         }
+        enableAX(app)
         guard let t = await readViaCopy() else { return nil }
-        return Captured(text: t, source: .copy, pid: pid, appName: name, bounds: focusedElement().flatMap(bounds))
+        return Captured(text: t, source: .copy, pid: pid, appName: name, role: el.flatMap(role), bounds: el.flatMap(bounds))
     }
 
     /// 回填前用原来的方式重新读取选区，用于逐字比对
     static func reread(_ c: Captured) async -> String? {
         switch c.source {
-        case .ax: return focusedElement().flatMap(axSelectedText)
-        case .copy: return await readViaCopy()
+        case .ax:
+            guard let el = focusedElement(), role(el) == c.role else { return nil } // 换了另一种控件
+            return axSelectedText(el)
+        case .copy:
+            return await readViaCopy()
         }
     }
 
@@ -184,11 +207,11 @@ enum Selection {
         pb.clearContents()
         let item = NSPasteboardItem()
         item.setString(text, forType: .string)
-        item.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
+        item.setData(Data(), forType: transientType)
         pb.writeObjects([item])
         let ours = pb.changeCount
         Keys.paste()
-        await sleepMs(400)
+        await sleepMs(800) // 慢应用（Electron）可能晚处理 ⌘V，过早恢复会粘进旧内容
         if pb.changeCount == ours { snap.restore() }
     }
 }
@@ -211,12 +234,14 @@ enum Keychain {
         return String(data: d, encoding: .utf8)
     }
 
-    static func set(_ account: String, _ value: String) {
+    /// 返回是否保存成功（空值即删除）
+    @discardableResult
+    static func set(_ account: String, _ value: String) -> Bool {
         SecItemDelete(query(account) as CFDictionary)
-        guard !value.isEmpty else { return }
+        guard !value.isEmpty else { return true }
         var q = query(account)
         q[kSecValueData as String] = Data(value.utf8)
-        SecItemAdd(q as CFDictionary, nil)
+        return SecItemAdd(q as CFDictionary, nil) == errSecSuccess
     }
 }
 

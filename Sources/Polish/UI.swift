@@ -54,6 +54,10 @@ struct PanelView: View {
                 }
             }
             Spacer(minLength: 0)
+            if state.copyOnly {
+                Text("没有连上 polish-edit，结果只能复制。若 zsh 草稿被清空，执行 print -z -- $ZLE_LINE_ABORTED 恢复。")
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
             DisclosureGroup("原文", isExpanded: $showSource) {
                 ScrollView {
                     Text(state.source).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
@@ -198,7 +202,9 @@ struct ProfilesTab: View {
             LabeledContent("API Key") {
                 HStack {
                     SecureField("", text: $key)
-                        .onChange(of: key) { _, v in Keychain.set(state.profiles[i].id.uuidString, v) }
+                        .onChange(of: key) { _, v in
+                            if !Keychain.set(state.profiles[i].id.uuidString, v) { status = "✗ API Key 保存到钥匙串失败" }
+                        }
                     Text("存于钥匙串").font(.caption).foregroundStyle(.secondary)
                 }
             }
