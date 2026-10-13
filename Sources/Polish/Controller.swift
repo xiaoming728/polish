@@ -60,6 +60,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+        NSApp.mainMenu = editMenu()
         panel.contentView = NSHostingView(rootView: PanelView(state: state))
 
         HotKey.handler = { [weak self] in self?.trigger() }
@@ -85,6 +86,24 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: 菜单
+
+    /// 菜单栏应用不显示主菜单，但输入框的 ⌘C/⌘V/⌘X/⌘A/⌘Z 要靠主菜单里的「编辑」项分发，缺了就无法复制粘贴
+    func editMenu() -> NSMenu {
+        let main = NSMenu()
+        let item = NSMenuItem()
+        let edit = NSMenu(title: "编辑")
+        edit.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = edit.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "复制", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        item.submenu = edit
+        main.addItem(item)
+        return main
+    }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()

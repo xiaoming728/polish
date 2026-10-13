@@ -132,6 +132,7 @@ struct ProfilesTab: View {
     @ObservedObject var state: AppState
     @State var sel: UUID?
     @State var key = ""
+    @State var showKey = false
     @State var models: [String] = []
     @State var status = ""
     @State var busy = false
@@ -201,11 +202,14 @@ struct ProfilesTab: View {
             TextField("Base URL", text: $state.profiles[i].baseURL)
             LabeledContent("API Key") {
                 HStack {
-                    SecureField("", text: $key)
-                        .onChange(of: key) { _, v in
-                            if !Keychain.set(state.profiles[i].id.uuidString, v) { status = "✗ API Key 保存到钥匙串失败" }
-                        }
+                    // 密码框禁止向外复制（系统行为）；需要查看或复制时切到明文
+                    if showKey { TextField("", text: $key) } else { SecureField("", text: $key) }
+                    Button { showKey.toggle() } label: { Image(systemName: showKey ? "eye.slash" : "eye") }
+                        .buttonStyle(.borderless).help(showKey ? "隐藏" : "显示")
                     Text("存于钥匙串").font(.caption).foregroundStyle(.secondary)
+                }
+                .onChange(of: key) { _, v in
+                    if !Keychain.set(state.profiles[i].id.uuidString, v) { status = "✗ API Key 保存到钥匙串失败" }
                 }
             }
             LabeledContent("模型") {
