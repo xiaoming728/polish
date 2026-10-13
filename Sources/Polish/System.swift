@@ -94,6 +94,9 @@ struct Captured {
     let appName: String
     let role: String? // 焦点元素的 AX role，回填前辅助校验
     let bounds: CGRect? // Cocoa 坐标
+    /// 没有选区时由 app 自动选中「光标前的内容」；放弃时据此恢复光标
+    enum AutoSelect { case ax(caret: Int), keys }
+    var autoSelect: AutoSelect? = nil
 }
 
 @MainActor
@@ -176,17 +179,71 @@ enum Selection {
         return t
     }
 
+    static let editableRoles: Set<String> = ["AXTextArea", "AXTextField", "AXComboBox", "AXSearchField"]
+
+    /// 选区优先；没有选区时自动选中输入框里光标前的全部内容，再按选区流程处理
     static func capture() async -> Captured? {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
         let pid = app.processIdentifier
         let name = app.localizedName ?? "前台应用"
         let el = focusedElement()
-        if let el, let t = axSelectedText(el), !t.isEmpty {
-            return Captured(text: t, source: .ax, pid: pid, appName: name, role: role(el), bounds: bounds(el))
+        if let el, let t = axSelectedText(el) {
+            if !t.isEmpty {
+                return Captured(text: t, source: .ax, pid: pid, appName: name, role: role(el), bounds: bounds(el))
+            }
+            // AX 明确告诉我们没有选区：不走 ⌘C（VS Code 等无选区时会复制整行）
+            if let c = selectBeforeCaretAX(el, pid: pid, name: name) { return c }
+            return await selectBeforeCaretKeys(el, pid: pid, name: name)
         }
         enableAX(app)
-        guard let t = await readViaCopy() else { return nil }
-        return Captured(text: t, source: .copy, pid: pid, appName: name, role: el.flatMap(role), bounds: el.flatMap(bounds))
+        if let t = await readViaCopy() {
+            return Captured(text: t, source: .copy, pid: pid, appName: name, role: el.flatMap(role), bounds: el.flatMap(bounds))
+        }
+        return await selectBeforeCaretKeys(el, pid: pid, name: name)
+    }
+
+    /// AX：读取输入框的值和光标位置，把 [0, 光标) 设为选区
+    static func selectBeforeCaretAX(_ el: AXUIElement, pid: pid_t, name: String) -> Captured? {
+        var v: CFTypeRef?, r: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &v) == .success, let value = v as? String,
+              AXUIElementCopyAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, &r) == .success, let r,
+              CFGetTypeID(r) == AXValueGetTypeID() else { return nil }
+        var caret = CFRange()
+        guard AXValueGetValue(r as! AXValue, .cfRange, &caret), caret.length == 0, caret.location > 0,
+              caret.location <= (value as NSString).length else { return nil }
+        let before = (value as NSString).substring(to: caret.location)
+        guard !before.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        var range = CFRange(location: 0, length: caret.location)
+        guard let rv = AXValueCreate(.cfRange, &range),
+              AXUIElementSetAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, rv) == .success,
+              axSelectedText(el) == before else { return nil } // 设置后读回核对，防止应用不支持
+        return Captured(text: before, source: .ax, pid: pid, appName: name, role: role(el), bounds: bounds(el), autoSelect: .ax(caret: caret.location))
+    }
+
+    /// 兜底：⇧⌘↑ 选到输入框开头再 ⌘C。只在焦点是文本控件时做，避免在网页正文里乱选
+    static func selectBeforeCaretKeys(_ el: AXUIElement?, pid: pid_t, name: String) async -> Captured? {
+        guard let el, let r = role(el), editableRoles.contains(r) else { return nil }
+        Keys.post(kVK_UpArrow, [.maskCommand, .maskShift])
+        await sleepMs(80)
+        guard let t = await readViaCopy(), !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            Keys.post(kVK_RightArrow, []) // 收起可能产生的空选区，光标回到原处
+            return nil
+        }
+        return Captured(text: t, source: .copy, pid: pid, appName: name, role: r, bounds: bounds(el), autoSelect: .keys)
+    }
+
+    /// 放弃 / 复制时撤销自动选区，光标回到原来的位置（目标应用仍在前台时）
+    static func restoreCaret(_ c: Captured) {
+        guard let a = c.autoSelect, NSWorkspace.shared.frontmostApplication?.processIdentifier == c.pid else { return }
+        switch a {
+        case .ax(let caret):
+            var range = CFRange(location: caret, length: 0)
+            if let el = focusedElement(), let rv = AXValueCreate(.cfRange, &range) {
+                AXUIElementSetAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, rv)
+            }
+        case .keys:
+            Keys.post(kVK_RightArrow, []) // 选区是「开头 → 原光标」，按 → 收起到原光标
+        }
     }
 
     /// 回填前用原来的方式重新读取选区，用于逐字比对

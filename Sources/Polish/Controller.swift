@@ -162,7 +162,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let c = await Selection.capture()
                 capturing = false
                 guard let c else {
-                    showToast("请先选中要润色的文字", icon: "exclamationmark.circle")
+                    showToast("没有可润色的文字：请选中文字，或把光标放在输入框里已写内容的末尾", icon: "exclamationmark.circle", seconds: 3)
                     return
                 }
                 state.source = c.text
@@ -293,6 +293,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(state.output, forType: .string)
         if case .terminal? = origin { server.reply(.cancel) }
+        restoreAutoSelection()
         endSession()
         showToast("已复制到剪贴板，原文未改动", icon: "doc.on.clipboard")
     }
@@ -308,8 +309,21 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func dismiss() {
         polisher.cancel()
         if case .terminal? = origin { server.reply(.cancel) }
+        restoreAutoSelection()
         endSession()
         hideToast()
+    }
+
+    /// 放弃自动选中「光标前内容」的会话时，把光标放回原处；校验失败（焦点已变）时不动
+    func restoreAutoSelection() {
+        guard case .gui(let c)? = origin, c.autoSelect != nil else { return }
+        if case .verifyFailed = state.phase { return }
+        hidePanel() // 面板仍是 key 窗口时，合成的 → 键会被面板收走
+        hideToast()
+        Task {
+            await sleepMs(60)
+            Selection.restoreCaret(c)
+        }
     }
 
     func endSession() {
