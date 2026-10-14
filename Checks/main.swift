@@ -250,8 +250,8 @@ do {
     check(parseConversion("好的：{\"en\":\"Hi\",\"zh\":\"嗨\"}") == Conversion(en: "Hi", zh: "嗨"), "容忍前后多余文字")
     check(parseConversion(#"{"en":"","zh":"你好"}"#) == nil && parseConversion("not json") == nil, "缺字段或非 JSON 返回 nil")
     check(typingInstruction(.english).contains("<text>") && typingInstruction(.english).contains("\"en\"") && typingInstruction(.english).contains("\"zh\""), "指令约定 JSON 字段 en / zh")
-    check(typingInstruction(.japanese).contains("自然地道的日文") && translateInstruction(.japanese).contains("自然、地道的日文")
-          && sentenceInstruction(.japanese).contains("自然、地道的日文") && !translateInstruction(.japanese).contains("的英文"), "三条指令都按目标语言翻译")
+    check(typingInstruction(.japanese).contains("自然地道的日语") && translateInstruction(.japanese).contains("自然、地道的日语")
+          && sentenceInstruction(.japanese).contains("自然、地道的日语") && !translateInstruction(.japanese).contains("的英语"), "三条指令都按目标语言翻译")
 }
 
 // MARK: 输入法第一候选词 / 快速请求
@@ -436,10 +436,15 @@ do {
     let ds = Profile(name: "d", preset: "DeepSeek", wire: .openAI, baseURL: "https://api.deepseek.com", model: "deepseek-chat", instruction: "润色", extraJSON: "")
     let sp = sentenceProfile(ds, .english)
     check(sp.instruction == sentenceInstruction(.english), "整句用整句指令")
-    check(sentenceProfile(ds, .german).instruction.contains("德文"), "整句按目标语言出指令")
-    check(TypingLanguage.system(["en-US", "zh-Hans-CN"]) == .english && TypingLanguage.system(["it-IT", "ja-JP"]) == .japanese
-          && TypingLanguage.system(["it-IT"]) == .chinese && TypingLanguage.system([]) == .chinese, "默认语言取系统首选里第一个支持的，都不支持按中文")
-    check(reverseInstruction(from: .english, to: .japanese).contains("通常是英文") && reverseInstruction(from: .english, to: .japanese).contains("自然、地道的日文"), "反向指令从目标语言译成默认语言")
+    check(sentenceProfile(ds, .german).instruction.contains("德语"), "整句按目标语言出指令")
+    check(TypingLanguage.system(["en-US", "zh-Hans-CN"]) == .english && TypingLanguage.system(["it-IT", "ja-JP"]) == TypingLanguage(rawValue: "it")
+          && TypingLanguage.system(["zh-Hans-CN"]) == .chinese && TypingLanguage.system([]) == .chinese, "默认语言取系统首选里的第一个，读不到按中文")
+    check(TypingLanguage.all.count > 150 && TypingLanguage.all.first == .chinese && Set(TypingLanguage.all).count == TypingLanguage.all.count, "全球语言列表：常用在前、无重复")
+    check(TypingLanguage(rawValue: "英文") == .english && TypingLanguage(rawValue: "pt")?.name == "葡萄牙语" && TypingLanguage(rawValue: "not-a-language") == nil, "兼容旧版中文名设置，拒绝未知代码")
+    check(TypingLanguage(rawValue: "pt")!.matches("portu") && TypingLanguage(rawValue: "pt")!.matches("葡萄") && TypingLanguage(rawValue: "pt")!.matches("PT")
+          && !TypingLanguage(rawValue: "pt")!.matches("德"), "语言可按英文名、中文名、代码搜索")
+    check(!TypingLanguage(rawValue: "th")!.spaced && TypingLanguage(rawValue: "pt")!.spaced, "无空格分词的语言不按整词着色")
+    check(reverseInstruction(from: .english, to: .japanese).contains("通常是英语") && reverseInstruction(from: .english, to: .japanese).contains("自然、地道的日语"), "反向指令从目标语言译成默认语言")
     if !fastOverrides(ds).isEmpty, fastOverrides(ds)["max_tokens"] != nil {
         check(body(try! fastRequest(sp, apiKey: "k", text: "你好"))["max_tokens"] as? Int == 400, "限长服务整句放宽到 400")
     }

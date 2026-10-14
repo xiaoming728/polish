@@ -725,7 +725,7 @@ struct TypingHintView: View {
 
     func pending(_ key: String) -> some View {
         HStack(alignment: .top, spacing: 6) {
-            Text(model.notice == nil ? key : (key == "⌥1" ? model.language.rawValue : "中文")).font(.system(size: 11, weight: .medium, design: .rounded))
+            Text(model.notice == nil ? key : (key == "⌥1" ? model.language.name : "中文")).font(.system(size: 11, weight: .medium, design: .rounded))
                 .padding(.horizontal, 5).padding(.vertical, 1)
                 .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
                 .fixedSize()
@@ -736,7 +736,7 @@ struct TypingHintView: View {
 
     func row(_ key: String, _ text: String, primary: Bool) -> some View {
         HStack(alignment: .top, spacing: 6) {
-            Text(model.notice == nil ? key : (key == "⌥1" ? model.language.rawValue : "中文")).font(.system(size: 11, weight: .medium, design: .rounded))
+            Text(model.notice == nil ? key : (key == "⌥1" ? model.language.name : "中文")).font(.system(size: 11, weight: .medium, design: .rounded))
                 .padding(.horizontal, 5).padding(.vertical, 1)
                 .background(primary ? Color.accentColor.opacity(0.25) : Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
                 .fixedSize()

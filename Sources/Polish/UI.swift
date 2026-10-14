@@ -328,15 +328,13 @@ struct GeneralTab: View {
                 Text(hint).font(.caption).foregroundStyle(.secondary)
             }
             Section("输入时中英提示") {
-                Toggle("中文输入法下敲拼音时，在光标上方显示 ⌥1 \(state.targetLanguage.rawValue) / ⌥2 中文", isOn: $state.typingAssist)
-                Picker("⌥1 翻译成", selection: $state.targetLanguage) {
-                    ForEach(TypingLanguage.allCases.filter { $0 != .chinese }, id: \.self) { Text($0.rawValue).tag($0) }
-                }.disabled(!state.typingAssist)
-                Picker("默认语言", selection: $state.nativeLanguage) {
-                    Text("跟随系统（\(TypingLanguage.system().rawValue)）").tag(TypingLanguage?.none)
-                    ForEach(TypingLanguage.allCases, id: \.self) { Text($0.rawValue).tag(Optional($0)) }
-                }.disabled(!state.typingAssist)
-                Toggle("在键盘布局（ABC 等）下输入时，提示译成\(state.native.rawValue)，⌥1 替换（会把敲的文字发给模型；终端、密码框中不工作）", isOn: $state.reverseTyping)
+                Toggle("中文输入法下敲拼音时，在光标上方显示 ⌥1 \(state.targetLanguage.name) / ⌥2 中文", isOn: $state.typingAssist)
+                LanguagePicker(title: "⌥1 翻译成", selection: Binding(get: { state.targetLanguage }, set: { if let l = $0 { state.targetLanguage = l } }),
+                               excluded: .chinese)
+                    .disabled(!state.typingAssist)
+                LanguagePicker(title: "默认语言", selection: $state.nativeLanguage, followSystem: "跟随系统（\(TypingLanguage.system().name)）")
+                    .disabled(!state.typingAssist)
+                Toggle("在键盘布局（ABC 等）下输入时，提示译成\(state.native.name)，⌥1 替换（会把敲的文字发给模型；终端、密码框中不工作）", isOn: $state.reverseTyping)
                     .disabled(!state.typingAssist)
                 Toggle("英文优先查 macOS 本地词典（牛津英汉汉英词典，离线、即时；短语和查不到的词再问模型）", isOn: $state.localDictionary)
                     .disabled(!state.typingAssist || state.targetLanguage != .english)
@@ -378,6 +376,56 @@ enum ZshRc {
         let backup = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".zshrc.polish-backup")
         if FileManager.default.fileExists(atPath: url.path) { try old.write(to: backup, atomically: true, encoding: .utf8) }
         try s.write(to: url, atomically: true, encoding: .utf8)
+    }
+}
+
+/// 可搜索的语言下拉：点开后输入中文名、英文名、本地名或代码过滤（系统认识的全部语言）
+struct LanguagePicker: View {
+    let title: String
+    @Binding var selection: TypingLanguage?
+    var followSystem: String? = nil // 非 nil 时第一项是「跟随系统」（selection 为 nil）
+    var excluded: TypingLanguage? = nil
+    @State private var open = false
+    @State private var query = ""
+
+    var body: some View {
+        LabeledContent(title) {
+            Button { open.toggle() } label: {
+                HStack(spacing: 4) {
+                    Text(selection?.name ?? followSystem ?? "")
+                    Image(systemName: "chevron.up.chevron.down").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .popover(isPresented: $open, arrowEdge: .bottom) {
+                VStack(spacing: 6) {
+                    TextField("搜索语言（中文、English、代码）", text: $query)
+                        .textFieldStyle(.roundedBorder)
+                    List {
+                        if let followSystem, query.isEmpty { row(followSystem, nil) }
+                        ForEach(TypingLanguage.all.filter { $0 != excluded && $0.matches(query) }) { row($0.name, $0) }
+                    }
+                    .listStyle(.plain)
+                }
+                .padding(8)
+                .frame(width: 260, height: 320)
+                .onAppear { query = "" }
+            }
+        }
+    }
+
+    private func row(_ name: String, _ lang: TypingLanguage?) -> some View {
+        Button {
+            selection = lang
+            open = false
+        } label: {
+            HStack {
+                Text(name)
+                Spacer()
+                if lang == selection { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
