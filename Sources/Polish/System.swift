@@ -433,19 +433,18 @@ enum IME {
     /// 当前输入法候选窗里当前页的候选，及候选窗的屏幕矩形（读输入法进程的 AX 树；读不到返回空，调用方退回模型推断）
     @MainActor
     static func candidates() -> (list: [String], frame: CGRect?) {
-        let pid = currentPID()
-        guard pid != 0 else { return ([], nil) }
+        guard let pid = current()?.pid else { return ([], nil) }
         let r = candidates(pid: pid, deadline: .distantFuture)
         return (r.list, r.window.flatMap(Selection.frame))
     }
 
-    /// 当前输入法的进程；读不到为 0
+    /// 当前输入法的进程与 bundle ID；读不到为 nil
     @MainActor
-    static func currentPID() -> pid_t {
+    static func current() -> (pid: pid_t, bundleID: String)? {
         guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
-              let bp = TISGetInputSourceProperty(src, kTISPropertyBundleID) else { return 0 }
+              let bp = TISGetInputSourceProperty(src, kTISPropertyBundleID) else { return nil }
         let bundleID = Unmanaged<CFString>.fromOpaque(bp).takeUnretainedValue() as String
-        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.processIdentifier ?? 0
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first.map { ($0.processIdentifier, bundleID) }
     }
 
     /// 只用 AX，任何线程可调；超过 deadline 就停止遍历，返回已读到的部分。window：有候选文字的窗口

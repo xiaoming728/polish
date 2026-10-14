@@ -27,7 +27,7 @@ struct PolisherStub {
   if Self.deferred { Self.completion = onDone } else { onDone(.success(Self.output)) }
  }
 }
-struct GateStub { var held: (pinyin: String, list: [String]) = ("", []); var ime: pid_t = 0 }
+struct GateStub { var held: (pinyin: String, list: [String], direct: Bool) = ("", [], false); var ime: pid_t = 0; var known = false; func learned() {} }
 struct PanelStub { var isVisible = true; var alphaValue = 1.0 }
 @MainActor enum KeyStore { static func apiKey(_ p: Profile) -> String { "test" } }
 @MainActor enum Log { static func write(_ text: String) {} }
@@ -67,6 +67,8 @@ struct PanelStub { var isVisible = true; var alphaValue = 1.0 }
  func typedChar(_ event: CGEvent) -> Character? { event.typedCharacter }
  var gate = GateStub()
  var avoid: () -> CGRect? = { nil }
+ var lastInput: [pid_t: CGRect] = [:]
+ func windowBottom(_ pid: pid_t) -> CGRect? { nil }
  func chineseInputActive() -> Bool { true }
  func sentenceChanged() {}
  func clearSentence() { sentence = ""; sentenceNeedsConversion = false; sentenceIncomplete = false; sentenceResult = nil; model.notice = nil }
@@ -75,7 +77,7 @@ struct PanelStub { var isVisible = true; var alphaValue = 1.0 }
  func fadeOut() { visible = false }
  func choose(english: Bool) {}
 '''
-probe += '\n'.join(method(n) for n in ['trackSentence', 'committed', 'classify', 'feed', 'hide', 'origin', 'requestSentence', 'registerKeys'])
+probe += '\n'.join(method(n) for n in ['directCommit', 'trackSentence', 'committed', 'classify', 'feed', 'hide', 'origin', 'requestSentence', 'registerKeys'])
 probe += '''
  func press(_ code: Int, char: String) {
   let event = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(code), keyDown: true)!
@@ -149,12 +151,17 @@ probe += '''
          "模型补全未知拼音后恢复准确原文与替换快捷键")
   let short = Probe(); short.word("ni", "你"); short.press(kVK_Space, char: " ")
   for c in "d" { short.press(kVK_ANSI_D, char: String(c)) }
-  short.gate.held = ("d", ["的", "地"])
+  short.gate.held = ("d", ["的", "地"], false)
   short.press(kVK_Space, char: " ")
   assert(short.sentence == "你的" && !short.sentenceNeedsConversion, "简拼 d 上屏前已拦下读到候选，整句是「的」不是拼音 d")
-  let stale = Probe(); stale.word("hao", "好"); stale.gate.held = ("ha", ["哈"])
+  let stale = Probe(); stale.word("hao", "好"); stale.gate.held = ("ha", ["哈"], false)
   stale.press(kVK_Space, char: " ")
   assert(stale.sentence == "好", "拦截读到的候选拼音与当前不一致时不采用")
+  let english = Probe(); english.word("xiufu", "修复"); english.press(kVK_Space, char: " ")
+  for c in "bug" { english.buffer.feed(.letter(c)) }
+  english.gate.held = ("bug", [], true)
+  english.press(kVK_Space, char: " ")
+  assert(english.sentence == "修复bug " && !english.sentenceNeedsConversion, "输入法英文模式在句中敲的英文原样记入，不当拼音")
   let numbers = Probe()
   for c in "2026" { numbers.press(kVK_ANSI_2, char: String(c)) }
   assert(numbers.sentence == "2026" && numbers.visible, "直接输入数字应拉起提示")

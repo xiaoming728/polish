@@ -6,21 +6,42 @@ import SwiftUI
 
 /// 上屏键放行前读候选（跑在 tap 线程）：主动 tap 拦着上屏键时输入法还没收到它，候选窗一定还在，
 /// 读取不再和输入法收起候选窗赛跑。只在有未上屏拼音时读，其余按键原样立即放行。
+/// 读得到候选窗的输入法，上屏键前没有候选窗即为英文（直接上屏）模式：held.direct
 final class CommitGate: @unchecked Sendable {
     private let lock = NSLock()
     private var _ime: pid_t = 0
-    private var _held: (pinyin: String, list: [String]) = ("", [])
+    private var _imeID = ""
+    private var _known = false
+    private var _held: (pinyin: String, list: [String], direct: Bool) = ("", [], false)
     private var pinyin = PinyinBuffer() // 只在 tap 线程读写
-    private var readable = Set<pid_t>() // 读到过候选的输入法：候选窗还没画出来时才值得等
+    private var lastLetter = Date.distantPast // 只在 tap 线程读写
 
-    /// 当前中文输入法进程；不是中文输入法为 0（主线程更新）
-    var ime: pid_t {
-        get { lock.withLock { _ime } }
-        set { lock.withLock { _ime = newValue } }
+    static let knownKey = "readableIMEs" // 读到过候选窗的输入法 bundle ID：据此才能把「没有候选窗」判为英文模式
+
+    /// 当前中文输入法；不是中文输入法时 pid 为 0（主线程更新）
+    func setIME(_ pid: pid_t, bundleID: String) {
+        let known = (UserDefaults.standard.stringArray(forKey: Self.knownKey) ?? []).contains(bundleID)
+        lock.withLock { _ime = pid; _imeID = bundleID; _known = known }
+    }
+
+    var ime: pid_t { lock.withLock { _ime } }
+    /// 当前输入法的候选窗读得到：没有候选窗就是英文模式
+    var known: Bool { lock.withLock { _known } }
+
+    /// 读到了候选：记住这个输入法（持久化，重启后第一次就能识别英文模式）
+    func learned() {
+        let id: String? = lock.withLock {
+            guard !_known, !_imeID.isEmpty else { return nil }
+            _known = true
+            return _imeID
+        }
+        guard let id else { return }
+        let d = UserDefaults.standard
+        d.set(Array(Set((d.stringArray(forKey: Self.knownKey) ?? []) + [id])), forKey: Self.knownKey)
     }
 
     /// 最近一次上屏键前读到的候选；pinyin 与主线程缓冲一致才可用
-    var held: (pinyin: String, list: [String]) { lock.withLock { _held } }
+    var held: (pinyin: String, list: [String], direct: Bool) { lock.withLock { _held } }
 
     func hold(_ type: CGEventType, _ event: CGEvent) {
         guard type == .keyDown else { return pinyin.reset() }
@@ -31,17 +52,20 @@ final class CommitGate: @unchecked Sendable {
         let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let k = TypingKey.classify(code: code, char: event.typedCharacter, composing: !pinyin.text.isEmpty)
         if k == .other, !pinyin.text.isEmpty {
-            // shortcut: 最多拦 80ms，输入法候选窗读不到 AX 时仍会漏读；遇到再按输入法单独处理
-            let deadline = Date().addingTimeInterval(0.08)
-            var list = IME.candidates(pid: pid, deadline: deadline).list
-            while list.isEmpty, readable.contains(pid), Date() < deadline {
+            // 候选窗在最后一个字母后约 80ms 内画出；之后仍没有，就是英文模式（直接上屏），不再等
+            // shortcut: 输入法候选窗读不到 AX 时既会漏读、也无法识别英文模式；遇到再按输入法单独处理
+            let deadline = min(Date().addingTimeInterval(0.08), max(Date(), lastLetter.addingTimeInterval(0.08)))
+            let known = self.known
+            var list = IME.candidates(pid: pid, deadline: deadline.addingTimeInterval(0.02)).list
+            while list.isEmpty, known, Date() < deadline {
                 usleep(5000)
-                list = IME.candidates(pid: pid, deadline: deadline).list
+                list = IME.candidates(pid: pid, deadline: deadline.addingTimeInterval(0.02)).list
             }
-            if !list.isEmpty { readable.insert(pid) }
-            let read = (pinyin.text, list)
+            if !list.isEmpty { learned() }
+            let read = (pinyin.text, list, list.isEmpty && known)
             lock.withLock { _held = read }
         }
+        if case .letter = k { lastLetter = Date() }
         pinyin.feed(k)
     }
 }
@@ -78,7 +102,9 @@ final class TypingAssist {
     private let sentencePolisher = Polisher()
     private var sentenceResult: (text: String, t: SentenceTranslation)? // 本句（不含正在敲的词）的翻译
     private var candidates: (pinyin: String, list: [String]) = ("", []) // convert 读到的候选，上屏时取用
-    private var reverseText = "" // 反向提示：键盘布局下本段敲的文字
+    private var reverseText = "" // 反向提示：键盘布局 / 输入法英文模式下本段敲的文字
+    private var direct = false // 本段是输入法的英文模式（字母直接上屏），按反向提示处理
+    private var lastInput: [pid_t: CGRect] = [:] // 各应用最近一次可信的输入位置：读不到光标和候选窗时沿用
     private var pid: pid_t = 0
     private var hintAnchor: CGRect? // 首次可信的输入位置，本次提示期间固定
     private var imeFrame: CGRect? // 输入法候选窗：读不到光标的应用（微信等）用它定位
@@ -176,12 +202,14 @@ final class TypingAssist {
 
     /// 告诉 tap 线程当前是不是中文输入法、进程是哪个（TIS 只能在主线程调用）
     private func refreshIME() {
-        gate.ime = chineseInputActive() ? IME.currentPID() : 0
+        let ime = chineseInputActive() ? IME.current() : nil
+        gate.setIME(ime?.pid ?? 0, bundleID: ime?.bundleID ?? "")
     }
 
     func reset() {
         buffer.reset()
         reverseText = ""
+        direct = false
         model.reverse = false
         debounce?.cancel()
         polisher.cancel()
@@ -259,8 +287,16 @@ final class TypingAssist {
         // ⌥1 / ⌥2 由热键处理（会被热键吞掉、不进应用）；这里不能把它当成「结束输入」清掉结果
         if panel.isVisible, flags == .maskAlternate, code == kVK_ANSI_1 || code == kVK_ANSI_2 { return }
         if fieldCleared(code, flags), !sentence.isEmpty { return reset() } // 每个键都要过一遍：记录 ⌘A
-        if reverseActive() { return trackReverse(code, flags, event) }
+        if reverseActive() {
+            if direct { buffer.feed(classify(code, flags, event)) } // 切回中文模式时拼音不丢
+            return trackReverse(code, flags, event)
+        }
         if !reverseText.isEmpty { reset() } // 从键盘布局切回了输入法
+        // 输入法英文模式：上屏键前没有候选窗。本句为空时整段按外文反向提示；句中的英文交给 trackSentence 原样记入
+        if sentence.isEmpty, !buffer.text.isEmpty, classify(code, flags, event) == .other, directCommit(), reverseAllowed() {
+            enterDirect()
+            return trackReverse(code, flags, event)
+        }
         trackSentence(code, flags, event) // 先于 feed：feed 遇到空格等会清空拼音
         feed(classify(code, flags, event))
     }
@@ -319,7 +355,11 @@ final class TypingAssist {
             let literal = c.flatMap { $0 != "'" && ($0.isNumber || $0.isPunctuation || $0.isSymbol) ? String($0) : nil }
             guard (flags.isEmpty && code == kVK_Space) || digit != nil || literal != nil else { return }
             let pick = digit.map { $0 - 1 } ?? buffer.highlight
-            if let word = committed(pick) {
+            if directCommit() {
+                // 英文模式：字母连同这个键（空格、数字、标点）原样上屏，是已确认的英文
+                sentence += buffer.text + (c.map(String.init) ?? "")
+                return sentenceChanged()
+            } else if let word = committed(pick) {
                 add = word
             } else if inTerminal() {
                 guard !sentence.isEmpty else { return clearSentence() } // 没有可信前文：不处理终端未知输入。
@@ -476,14 +516,33 @@ final class TypingAssist {
     // MARK: 反向提示：键盘布局下敲的外文译成默认语言
 
     /// 终端里键盘布局下敲的可能是命令或密码，不发给模型
+    /// 终端里同样工作：密码提示时终端开启安全输入（Ghostty 自动，Terminal.app 需手动开「安全键盘输入」）则不处理
+    private func reverseAllowed() -> Bool {
+        state.typingAssist && state.reverseTyping && !isBusy() && !choosing && !IsSecureEventInputEnabled()
+    }
+
     private func reverseActive() -> Bool {
-        state.typingAssist && state.reverseTyping && !isBusy() && !choosing && !inTerminal()
-            && !IsSecureEventInputEnabled() && keyboardLayoutActive()
+        reverseAllowed() && (direct || keyboardLayoutActive())
+    }
+
+    /// 这次上屏键前没有候选窗：输入法处于英文模式，敲的字母直接上屏
+    private func directCommit() -> Bool {
+        let held = gate.held
+        return held.pinyin == buffer.text && held.direct
+    }
+
+    /// 把正在敲的字母转为反向提示的本段文字
+    private func enterDirect() {
+        Log.write("typing direct: input method in English mode")
+        let typed = buffer.text
+        reset()
+        direct = true
+        reverseText = typed
     }
 
     /// 本段到回车、点鼠标、带 ⌘⌃⌥ 的组合键或方向键等为止；停顿后整段翻译，⌥1 退格删掉本段再粘贴译文
     private func trackReverse(_ code: Int, _ flags: CGEventFlags, _ event: CGEvent) {
-        if !buffer.text.isEmpty || !sentence.isEmpty { reset() } // 从中文输入法切过来
+        if !direct, !buffer.text.isEmpty || !sentence.isEmpty { reset() } // 从中文输入法切过来
         // shortcut: ⌥e 等死键输入的重音字母也当作结束本段，需要时再跟踪死键状态
         guard flags.subtracting(.maskShift).isEmpty else { return reset() }
         if code == kVK_Delete {
@@ -510,6 +569,13 @@ final class TypingAssist {
     }
 
     private func requestReverse() {
+        if direct, !IME.candidates().list.isEmpty { // 切回了中文模式：正在敲的是拼音
+            Log.write("typing direct: back to composing")
+            direct = false
+            reverseText = ""
+            model.reverse = false
+            return buffer.ready ? convert() : hide()
+        }
         let text = reverseText
         guard !secureFieldFocused() else { return hide() }
         let p = state.current
@@ -555,10 +621,16 @@ final class TypingAssist {
         let (list, frame) = IME.candidates()
         if let frame { imeFrame = frame }
         candidates = (pinyin, list)
+        if !list.isEmpty { gate.learned() }
         let candidate = buffer.highlight < list.count ? list[buffer.highlight] : nil
         Log.write("typing convert len=\(pinyin.count) highlight=\(buffer.highlight) candidate=\(candidate != nil) readMs=\(Int(Date().timeIntervalSince(t0) * 1000))")
         // 切过的候选已不在当前页、或读不到候选窗：无法确定用户看到的是哪个词，宁可不显示
         // 终端：没有候选窗可能是在输入法英文模式下敲密码，字母绝不发给模型
+        if list.isEmpty, gate.known { // 读得到候选窗的输入法却没有候选窗：英文模式
+            guard sentence.isEmpty, reverseAllowed() else { return hide() }
+            enterDirect()
+            return requestReverse()
+        }
         if candidate == nil && (buffer.highlight > 0 || inTerminal()) {
             hide()
             return
@@ -649,12 +721,28 @@ final class TypingAssist {
             // 候选窗在输入行下方：往上补一行高，给输入文字留出空间。
             let ime = imeFrame.map { CGRect(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height + 22) }
             let currentCaret = inTerminal() ? nil : el.flatMap(Selection.bounds)
-            hintAnchor = currentIME != nil ? ime : currentCaret ?? ime ?? caret
+            let front = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+            if let found = currentIME != nil ? ime : currentCaret ?? ime ?? caret {
+                hintAnchor = found
+                lastInput[front] = found
+            } else {
+                // 英文模式没有候选窗、微信和终端又读不到光标：沿用这个应用上次的输入位置，没有再按窗口底部估算
+                hintAnchor = lastInput[front] ?? windowBottom(front)
+            }
             Log.write("typing anchor fixed=\(hintAnchor != nil) terminal=\(inTerminal())")
         }
         guard let anchor = hintAnchor else { return nil }
         let screen = NSScreen.screens.first { $0.frame.contains(anchor.origin) } ?? NSScreen.main!
         return typingHintFrame(size: size, anchor: anchor, visibleFrame: screen.visibleFrame, avoid: avoid())?.origin
+    }
+
+    /// shortcut: 按聚焦窗口底部 110pt 当作输入区（微信、终端 Agent 的输入框都在底部）；能读到真实输入位置后改用 lastInput
+    private func windowBottom(_ pid: pid_t) -> CGRect? {
+        let app = AXUIElementCreateApplication(pid)
+        var w: CFTypeRef?
+        guard pid != 0, AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &w) == .success, let w,
+              let f = Selection.frame(w as! AXUIElement) else { return nil }
+        return CGRect(x: f.minX + 16, y: f.minY, width: 1, height: min(110, f.height))
     }
 
     // MARK: 选择
