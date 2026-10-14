@@ -291,9 +291,11 @@ enum Selection {
         return Captured(text: before, source: .ax, pid: pid, appName: name, role: role(el), autoSelect: .ax(caret: caret.location))
     }
 
-    /// 兜底：⇧⌘↑ 选到输入框开头再 ⌘C。只在焦点是文本控件时做，避免在网页正文里乱选
+    /// 兜底：⇧⌘↑ 选到输入框开头再 ⌘C。只在焦点是文本控件时做，避免在网页正文里乱选；
+    /// 完全读不到焦点元素（微信 4.x 等自绘界面不暴露 AX）时也做，否则这类应用无法润色光标前内容
     static func selectBeforeCaretKeys(_ el: AXUIElement?, pid: pid_t, name: String) async -> Captured? {
-        guard let el, let r = role(el), editableRoles.contains(r) else { return nil }
+        let r = el.flatMap(role)
+        guard el == nil || r.map(editableRoles.contains) == true else { return nil }
         Keys.post(kVK_UpArrow, [.maskCommand, .maskShift])
         await sleepMs(80)
         guard let t = await readViaCopy(), !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -324,6 +326,12 @@ enum Selection {
             guard let el = focusedElement(), role(el) == c.role else { return nil } // 换了另一种控件
             return axSelectedText(el)
         case .copy:
+            if let t = await readViaCopy() { return t }
+            // 微信等应用在面板拿走焦点时会清掉选区：原选区若是整个输入框，⌘A 能原样选回；
+            // 调用方仍逐字比对，选回的内容不一致就不替换。焦点不是文本控件时不 ⌘A，免得选中整页
+            guard c.role.map(editableRoles.contains) ?? true else { return nil }
+            Keys.post(kVK_ANSI_A, .maskCommand)
+            await sleepMs(80)
             return await readViaCopy()
         }
     }
