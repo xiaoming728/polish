@@ -409,9 +409,132 @@ struct GeneralTab: View {
                 LabeledContent(tr("失败时", "On failure"), value: tr("不自动重试，原文不动", "No automatic retry; original text untouched"))
                 LabeledContent(tr("进行中再按快捷键", "Shortcut while running"), value: tr("取消本次润色", "Cancels the current polish"))
             }
+            UsageSection()
         }
         .formStyle(.grouped)
         .onDisappear { stop() }
+    }
+}
+
+/// 使用统计：只读本地 usage/ 下的每日汇总；时间范围只是视图状态，不存设置
+struct UsageSection: View {
+    enum Range: CaseIterable { case today, d7, d30, d90, year, all, custom }
+    @State var range = Range.d7
+    @State var start = Date()
+    @State var end = Date()
+    @State var total = UsageDay()
+    @State var days: [String] = []
+    @State var confirmClear = false
+
+    func label(_ r: Range) -> String {
+        switch r {
+        case .today: return tr("今天", "Today")
+        case .d7: return tr("7 天", "7 days")
+        case .d30: return tr("30 天", "30 days")
+        case .d90: return tr("90 天", "90 days")
+        case .year: return tr("今年", "This year")
+        case .all: return tr("全部", "All")
+        case .custom: return tr("自定义", "Custom")
+        }
+    }
+
+    func reload() {
+        UsageStore.shared.flush() // 内存里还没落盘的当天汇总也算上
+        if start > end { (start, end) = (end, start) }
+        let cal = Calendar.current, today = cal.startOfDay(for: Date())
+        let from: Date?, to: Date?
+        switch range {
+        case .today: (from, to) = (today, today)
+        case .d7: (from, to) = (cal.date(byAdding: .day, value: -6, to: today), today)
+        case .d30: (from, to) = (cal.date(byAdding: .day, value: -29, to: today), today)
+        case .d90: (from, to) = (cal.date(byAdding: .day, value: -89, to: today), today)
+        case .year: (from, to) = (cal.dateInterval(of: .year, for: today)?.start, today)
+        case .all: (from, to) = (nil, nil)
+        case .custom: (from, to) = (start, end)
+        }
+        (total, days) = UsageDay.load(dir: UsageStore.shared.dir, from: from.map { UsageDay.dayKey($0) }, to: to.map { UsageDay.dayKey($0) })
+    }
+
+    func appName(_ bundle: String) -> String {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle).map { FileManager.default.displayName(atPath: $0.path) } ?? bundle
+    }
+
+    func percent(_ n: Int, of d: Int) -> String { d == 0 ? "—" : "\(Int((Double(n) / Double(d) * 100).rounded()))%" }
+
+    func median(_ l: Latency) -> String {
+        guard let m = UsageDay.median(total.lat[l.rawValue] ?? []) else { return "—" }
+        if m >= Double(UsageDay.buckets - 1) { return tr("4.9 秒以上", "4.9 s or more") }
+        return tr("约 \(Int(m * 100) + 50)ms", "about \(Int(m * 100) + 50) ms") // 取所在 100ms 档的中点
+    }
+
+    var body: some View {
+        // 解开键：[配置, bundle, 来源, 结局]
+        let rows = total.polish.map { (UsageDay.fields($0.key), $0.value) }.filter { $0.0.count == 4 }
+        let count = rows.reduce(0) { $0 + $1.1 }
+        let accepted = rows.filter { $0.0[3] == PolishOutcome.accepted.rawValue }.reduce(0) { $0 + $1.1 }
+        let profiles = Dictionary(grouping: rows, by: { $0.0[0] }).sorted { $0.key < $1.key }
+        func failures(_ o: PolishOutcome) -> (Int, String) {
+            let byApp = Dictionary(grouping: rows.filter { $0.0[3] == o.rawValue }, by: { $0.0[1] }).mapValues { $0.reduce(0) { $0 + $1.1 } }
+            let top = byApp.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.prefix(3)
+            return (byApp.values.reduce(0, +), top.map { "\(appName($0.key)) \($0.value)" }.joined(separator: tr("、", ", ")))
+        }
+        let hints = Dictionary(total.hint.map { (UsageDay.fields($0.key).last ?? "", $0.value) }, uniquingKeysWith: +)
+        let shown = hints[HintOutcome.shown.rawValue] ?? 0
+
+        return Section(tr("使用统计", "Usage")) {
+            Picker(tr("时间范围", "Range"), selection: $range) {
+                ForEach(Range.allCases, id: \.self) { Text(label($0)).tag($0) }
+            }
+            if range == .custom {
+                DatePicker(tr("开始", "From"), selection: $start, in: ...Date(), displayedComponents: .date)
+                DatePicker(tr("结束", "To"), selection: $end, in: ...Date(), displayedComponents: .date)
+            }
+            if range == .all, let first = days.first {
+                Text(tr("自 \(first) 起", "Since \(first)")).font(.caption).foregroundStyle(.secondary)
+            }
+            if total.isEmpty {
+                Text(tr("这段时间没有记录", "No records in this period")).foregroundStyle(.secondary)
+            } else {
+                LabeledContent(tr("润色", "Polish"), value: tr("\(count) 次 · 采纳率 \(percent(accepted, of: count))", "\(count) times · \(percent(accepted, of: count)) accepted"))
+                ForEach(profiles, id: \.key) { name, rs in
+                    let n = rs.reduce(0) { $0 + $1.1 }
+                    let a = rs.filter { $0.0[3] == PolishOutcome.accepted.rawValue }.reduce(0) { $0 + $1.1 }
+                    LabeledContent("    " + name, value: tr("\(n) 次 · 采纳率 \(percent(a, of: n))", "\(n) times · \(percent(a, of: n)) accepted"))
+                }
+                ForEach([(PolishOutcome.failed, tr("失败", "Failed")), (.verifyFailed, tr("校验失败", "Verification failed"))], id: \.0) { o, title in
+                    let (n, top) = failures(o)
+                    LabeledContent(title, value: n == 0 ? "0" : tr("\(n) 次 · \(top)", "\(n) · \(top)"))
+                }
+                LabeledContent(tr("耗时中位数", "Median latency"),
+                               value: tr("首字 \(median(.polishFirst)) · 总计 \(median(.polishTotal))", "first token \(median(.polishFirst)) · total \(median(.polishTotal))"))
+                LabeledContent(tr("输入提示", "Typing hints"),
+                               value: tr("出现 \(shown) 次 · ⌥1 选中 \(percent(hints[HintOutcome.chosenEn.rawValue] ?? 0, of: shown)) · ⌥2 选中 \(percent(hints[HintOutcome.chosenZh.rawValue] ?? 0, of: shown))",
+                                         "shown \(shown) times · ⌥1 chosen \(percent(hints[HintOutcome.chosenEn.rawValue] ?? 0, of: shown)) · ⌥2 chosen \(percent(hints[HintOutcome.chosenZh.rawValue] ?? 0, of: shown))"))
+            }
+            HStack {
+                Text(tr("只记次数、耗时、应用和配置名，不含任何正文；只存在本机。", "Counts, latency, app and profile names only — never any text. Stored only on this Mac."))
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button(tr("打开文件夹", "Show in Finder")) {
+                    let dir = UsageStore.shared.dir
+                    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                    NSWorkspace.shared.activateFileViewerSelecting([dir])
+                }
+                Button(tr("清空统计", "Clear…")) { confirmClear = true }
+            }
+            .confirmationDialog(tr("清空全部使用统计？", "Clear all usage statistics?"), isPresented: $confirmClear) {
+                Button(tr("清空", "Clear"), role: .destructive) {
+                    UsageStore.shared.clear()
+                    reload()
+                }
+            } message: {
+                Text(tr("删除 usage 文件夹里的所有记录，无法恢复。", "Deletes every record in the usage folder. This can't be undone."))
+            }
+        }
+        .onAppear(perform: reload)
+        .onChange(of: range) { reload() }
+        .onChange(of: start) { reload() }
+        .onChange(of: end) { reload() }
     }
 }
 

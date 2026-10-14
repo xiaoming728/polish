@@ -453,5 +453,73 @@ do {
     check(chinesePunctuation[","] == "，" && chinesePunctuation["."] == "。", "中文标点映射")
 }
 
+// MARK: 使用统计：每日汇总、范围合并、直方图中位数
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("polish-usage-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    func put(_ day: String, _ d: UsageDay) { try! JSONEncoder().encode(d).write(to: dir.appendingPathComponent("\(day).json")) }
+
+    var a = UsageDay()
+    a.addPolish(profile: "默认|润色%25", bundle: "com.apple.TextEdit", origin: "gui", .accepted)
+    a.addPolish(profile: "默认|润色%25", bundle: "com.apple.TextEdit", origin: "gui", .accepted)
+    a.addPolish(profile: "精简", bundle: "com.mitchellh.ghostty", origin: "terminal", .verifyFailed)
+    a.addHint(bundle: "com.apple.Notes", .chosenEn)
+    a.addLatency(.polishFirst, ms: 730)
+    let round = try! JSONDecoder().decode(UsageDay.self, from: JSONEncoder().encode(a))
+    check(round == a && a.lat["polish_first"]?.count == 50 && a.lat["polish_first"]?[7] == 1, "汇总编解码往返一致；直方图 50 档、730ms 落第 7 档")
+    let k = a.polish.keys.first { $0.hasPrefix("默认") }!
+    check(a.polish.count == 2 && a.polish[k] == 2 && UsageDay.fields(k) == ["默认|润色%25", "com.apple.TextEdit", "gui", "accepted"]
+          && a.polish[UsageDay.key(["精简", "com.mitchellh.ghostty", "terminal", "verify_failed"])] == 1, "配置名含 | 和 % 时键能还原")
+    check(a.hint == ["com.apple.Notes|chosen_en": 1], "hint 键：bundle|outcome")
+
+    var b = UsageDay()
+    b.addPolish(profile: "精简", bundle: "com.mitchellh.ghostty", origin: "terminal", .verifyFailed)
+    b.addLatency(.polishFirst, ms: 99_000)
+    put("2025-12-31", a)
+    put("2026-01-01", b)
+    put("2026-01-02", b)
+    try! Data("{坏".utf8).write(to: dir.appendingPathComponent("2026-01-03.json"))
+    try! Data("x".utf8).write(to: dir.appendingPathComponent("notes.txt"))
+    let all = UsageDay.load(dir: dir, from: nil, to: nil)
+    check(all.days == ["2025-12-31", "2026-01-01", "2026-01-02"], "全部：坏 JSON 和非日期文件跳过，不崩溃")
+    check(all.total.polish[UsageDay.key(["精简", "com.mitchellh.ghostty", "terminal", "verify_failed"])] == 3
+          && all.total.lat["polish_first"]?[7] == 1 && all.total.lat["polish_first"]?[49] == 2, "跨年合并：次数相加、直方图逐档相加，5s 以上进最后一档")
+    let jan = UsageDay.load(dir: dir, from: "2026-01-01", to: "2026-01-02")
+    check(jan.days == ["2026-01-01", "2026-01-02"] && jan.total.polish.values.reduce(0, +) == 2, "跨天合并，自定义范围首尾都算在内")
+    check(UsageDay.load(dir: dir, from: "2026-01-02", to: "2025-12-31").days == all.days, "开始晚于结束时交换")
+    check(UsageDay.load(dir: dir, from: "2026-01-01", to: "2026-12-31").days == ["2026-01-01", "2026-01-02"], "今年不含去年的文件")
+    let none = UsageDay.load(dir: dir, from: "2024-01-01", to: "2024-12-31")
+    check(none.days.isEmpty && none.total.isEmpty, "空范围")
+    check(UsageDay.load(dir: dir.appendingPathComponent("missing"), from: nil, to: nil).days.isEmpty, "目录不存在时为空")
+
+    func hist(_ ms: [Int]) -> [Int] { var d = UsageDay(); ms.forEach { d.addLatency(.hintFirst, ms: $0) }; return d.lat["hint_first"]! }
+    check(UsageDay.median([]) == nil && UsageDay.median(Array(repeating: 0, count: 50)) == nil, "没有样本：中位数为空")
+    check(UsageDay.median(hist([120, 650, 4000])) == 6, "奇数个样本取中间那个的档")
+    check(UsageDay.median(hist([120, 650, 820, 4000])) == 7, "偶数个样本取中间两个档的平均（6、8 → 7）")
+    check(UsageDay.median(hist([100, 199, 200])) == 1 && UsageDay.bucket(ms: 99) == 0 && UsageDay.bucket(ms: 100) == 1 && UsageDay.bucket(ms: 4899) == 48
+          && UsageDay.bucket(ms: 4900) == 49 && UsageDay.bucket(ms: -5) == 0, "边界：100ms 整落入下一档")
+    check(UsageDay.median(hist([5000, 7000, 60_000])) == 49, "全部在 5s 以上：中位数在最后一档")
+
+    MainActor.assumeIsolated {
+        let store = UsageStore(dir: dir.appendingPathComponent("usage"))
+        store.polish(profile: "默认", bundle: "com.apple.TextEdit", origin: "gui", .copied)
+        store.flush()
+        let today = UsageDay.dayKey(Date())
+        let path = store.dir.appendingPathComponent("\(today).json").path
+        let fileMode = (try? FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int) ?? 0
+        let dirMode = (try? FileManager.default.attributesOfItem(atPath: store.dir.path)[.posixPermissions] as? Int) ?? 0
+        check(UsageDay.load(dir: store.dir, from: today, to: today).total.polish == ["默认|com.apple.TextEdit|gui|copied": 1] && fileMode == 0o600 && dirMode == 0o700,
+              "写入当天文件：目录 0700、文件 0600")
+        let again = UsageStore(dir: store.dir) // 同一天重启：接着已有文件累加
+        again.polish(profile: "默认", bundle: "com.apple.TextEdit", origin: "gui", .copied)
+        again.flush()
+        check(UsageDay.load(dir: store.dir, from: today, to: today).total.polish.values.first == 2, "同一天重启后接着累加，不覆盖")
+        again.clear()
+        again.flush()
+        check(!FileManager.default.fileExists(atPath: store.dir.path), "清空：删除目录，之后的 flush 不会把旧数据写回")
+    }
+}
+
 print(failures == 0 ? "\n全部通过" : "\n\(failures) 项失败")
 exit(failures == 0 ? 0 : 1)

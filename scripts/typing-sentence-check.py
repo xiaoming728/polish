@@ -74,6 +74,7 @@ struct PanelStub { var isVisible = true; var alphaValue = 1.0 }
  func clearSentence() { sentence = ""; sentenceNeedsConversion = false; sentenceIncomplete = false; sentenceResult = nil; model.notice = nil }
  func convert() {}
  func show() { visible = true }
+ func hintShown(_ t0: Date) {}
  func fadeOut() { visible = false }
  func choose(english: Bool) {}
 '''

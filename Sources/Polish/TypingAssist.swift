@@ -448,6 +448,7 @@ final class TypingAssist {
                     }
                 }
                 if tail.isEmpty { self.sentenceResult = (self.sentence, t) }
+                self.hintShown(t0)
                 self.model.en = t.en
                 // 没有拼音时用用户实际打的字，不用模型「改过」的
                 self.model.zh = unresolved || pinyinTail ? t.zh ?? self.sentence + tail : s + tail
@@ -601,6 +602,7 @@ final class TypingAssist {
             case .success(let s):
                 // 敲的本来就是默认语言时译文与原文相同，照样显示：⌥2 原文始终在
                 self.model.en = s.trimmingCharacters(in: CharacterSet(charactersIn: "\"“”'` \n"))
+                self.hintShown(t0)
             case .failure(let e):
                 self.model.error = e.localizedDescription
             }
@@ -662,6 +664,7 @@ final class TypingAssist {
         if state.localDictionary, state.targetLanguage == .english, let c = candidate, let en = LocalDictionary.english(c) {
             model.en = en
             model.error = nil
+            hintShown(t0)
             show()
             registerKeys()
             Log.write("typing dictionary hit ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
@@ -678,9 +681,11 @@ final class TypingAssist {
             case .success(let s):
                 if candidate != nil {
                     self.model.en = s.trimmingCharacters(in: CharacterSet(charactersIn: "\"“”'` \n"))
+                    self.hintShown(t0)
                 } else if let c = parseConversion(s) {
                     self.model.en = c.en
                     self.model.zh = c.zh
+                    self.hintShown(t0)
                 } else {
                     self.model.error = "无法解析模型结果"
                 }
@@ -752,6 +757,12 @@ final class TypingAssist {
         return CGRect(x: f.minX + 16, y: f.minY, width: 1, height: min(110, f.height))
     }
 
+    /// 使用统计：提示出了结果（只记次数和耗时）
+    private func hintShown(_ t0: Date) {
+        UsageStore.shared.hint(bundle: bundleID(pid), .shown)
+        UsageStore.shared.latency(.hintFirst, ms: Int(Date().timeIntervalSince(t0) * 1000))
+    }
+
     // MARK: 选择
 
     private func choose(english: Bool) {
@@ -761,6 +772,7 @@ final class TypingAssist {
         }
         let count = model.reverse ? reverseText.count : buffer.text.count + sentence.count // 正在敲的拼音 + 本句已上屏的字
         Log.write("typing choose english=\(english) backspaces=\(count) len=\(text.count)")
+        UsageStore.shared.hint(bundle: bundleID(pid), english ? .chosenEn : .chosenZh) // 与按键对应：⌥1 / ⌥2
         reset()
         choosing = true
         Task {

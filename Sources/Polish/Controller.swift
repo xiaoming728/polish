@@ -42,7 +42,21 @@ enum Origin {
     case gui(Captured)
     case terminal
     case copyOnly
+
+    var name: String {
+        switch self {
+        case .gui: return "gui"
+        case .terminal: return "terminal"
+        case .copyOnly: return "copyOnly"
+        }
+    }
 }
+
+/// 一次润色在使用统计里的身份；结局只记一次
+typealias UsageRun = (profile: String, bundle: String, origin: String)
+
+@MainActor
+func bundleID(_ pid: pid_t) -> String { NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "?" }
 
 @MainActor
 final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -58,13 +72,16 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var origin: Origin?
     var terminalPID: pid_t = 0
     /// 已确认、等第二次握手写回的终端结果；source 是第一次握手读到的草稿，用来确认输入框没被改过
-    var writeBack: (source: String, text: String)?
+    var writeBack: (source: String, text: String, run: UsageRun?)?
+    var run: UsageRun? // 进行中、结局还没记的润色
     var terminalKey: TerminalKey = .ctrlG // 本次握手实际生效的按键，写回时沿用
     var nextKeyAttempt: DispatchWorkItem?
     lazy var typing = TypingAssist(state: state)
     var typingSwitch: AnyCancellable?
     var typingRetry: Timer?
     var capturing = false // 读选区期间（约 0.3s）再按快捷键会让剪贴板快照拍到哨兵，忽略
+
+    func applicationWillTerminate(_ n: Notification) { UsageStore.shared.flush() }
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -211,6 +228,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if terminalBundleIDs.contains(front.bundleIdentifier ?? "") {
             state.target = "\(front.localizedName ?? "终端") · 输入框"
             terminalPID = front.processIdentifier
+            record(writeBack?.run, .cancelled) // 上一次的写回还没完成就又按了 ⌥P
             writeBack = nil
             let ime = TISCopyCurrentKeyboardInputSource().map { Unmanaged<CFString>.fromOpaque(TISGetInputSourceProperty($0.takeRetainedValue(), kTISPropertyInputSourceID)).takeUnretainedValue() as String } ?? "?"
             Log.write("terminal app=\(front.bundleIdentifier ?? "?") ime=\(ime)")
@@ -252,12 +270,15 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let w = writeBack {
             writeBack = nil
             guard draft == w.source else {
+                record(w.run, .copied)
                 server.reply(.cancel)
                 copyToPasteboard(w.text)
                 showToast("输入框已改动，没有写回。结果已复制到剪贴板", icon: "exclamationmark.triangle", seconds: 4)
                 return
             }
-            if server.reply(.ok(Data(w.text.utf8))) {
+            let ok = server.reply(.ok(Data(w.text.utf8)))
+            record(w.run, ok ? .accepted : .copied)
+            if ok {
                 showToast("已写回输入框（未发送）", icon: "checkmark.circle.fill")
             } else {
                 copyToPasteboard(w.text)
@@ -285,6 +306,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Log.write("terminal timeout: polish-edit not connected writeBack=\(writeBack != nil)")
         if let w = writeBack {
             writeBack = nil
+            record(w.run, .failed)
             copyToPasteboard(w.text)
             showToast("写回时没有连上 polish-edit。结果已复制到剪贴板", icon: "exclamationmark.triangle", seconds: 4)
             return
@@ -298,6 +320,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 state.target = "\(c.appName) · 选区（仅复制）"
                 begin(.copyOnly)
             } else {
+                record((state.current.name, bundleID(terminalPID), "terminal"), .failed) // 握手失败、也没有选区：这次 ⌥P 没开始润色
                 showToast("没有连上 polish-edit（已试 Ctrl+G 和 Ctrl+X）：请在 设置 → 终端集成 中安装 shell 片段，安装后需重启 CLI；OpenCode、Aider 等需在设置里选对应按键。若 zsh 草稿被清空，执行 print -z -- $ZLE_LINE_ABORTED 恢复",
                           icon: "terminal", seconds: 6)
             }
@@ -313,6 +336,8 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func begin(_ o: Origin) {
+        finish(.cancelled) // ⌘1–9 换配置重跑：上一次算放弃
+        run = (state.current.name, bundleID({ if case .gui(let c) = o { return c.pid }; return terminalPID }()), o.name)
         origin = o
         state.terminal = { if case .terminal = o { return true }; return false }()
         state.copyOnly = { if case .copyOnly = o { return true }; return false }()
@@ -331,12 +356,19 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             showToast("润色中…  \(state.hotKey.name) 取消", icon: "sparkles", sticky: true)
         }
         let source = state.source
+        let t0 = Date()
+        var first = true
         polisher.start(p, apiKey: key, text: source, onDelta: { [weak self] s in
+            if first {
+                first = false
+                UsageStore.shared.latency(.polishFirst, ms: Int(Date().timeIntervalSince(t0) * 1000))
+            }
             self?.state.output = s
         }, onDone: { [weak self] r in
             guard let self else { return }
             switch r {
             case .success(let s):
+                UsageStore.shared.latency(.polishTotal, ms: Int(Date().timeIntervalSince(t0) * 1000))
                 self.state.output = PolishCore.finalize(s, original: source)
                 self.state.phase = .done
                 switch self.effectiveMode {
@@ -351,6 +383,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func fail(_ msg: String) {
+        finish(.failed)
         state.phase = .failed(msg)
         hideToast()
         showPanel() // 任何回填方式下，失败都弹面板
@@ -362,21 +395,26 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch o {
         case .terminal:
             let source = state.source
+            let r = run // 结局要等第二次握手
+            run = nil
             endSession()
             hideToast()
             Task {
                 await sleepMs(60) // 面板收起、按键回到终端后再发
                 guard NSWorkspace.shared.frontmostApplication?.processIdentifier == terminalPID else {
+                    record(r, .copied)
                     copyToPasteboard(text)
                     showToast("前台已不是原终端，没有写回。结果已复制到剪贴板", icon: "exclamationmark.triangle", seconds: 4)
                     return
                 }
-                writeBack = (source, text)
+                writeBack = (source, text, r)
                 sendTerminalKeys([terminalKey])
             }
         case .copyOnly:
             copyResult()
         case .gui(let c):
+            let r = run // 校验期间再按 ⌥P 也不会把这次记成取消
+            run = nil
             hidePanel()
             hideToast()
             Task {
@@ -384,6 +422,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let same = NSWorkspace.shared.frontmostApplication?.processIdentifier == c.pid
                 let now = same ? await Selection.reread(c) : nil
                 guard now == c.text else {
+                    record(r, .verifyFailed)
                     state.phase = .verifyFailed(same
                         ? "回填前校验失败：原来的选中内容已变化。为防止误覆盖，没有替换。可按 ⌘C 复制结果后手动粘贴。"
                         : "回填前校验失败：前台应用已切换。为防止误覆盖，没有替换。可按 ⌘C 复制结果后手动粘贴。")
@@ -391,6 +430,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     return
                 }
                 await Selection.paste(text)
+                record(r, .accepted)
                 endSession()
                 showToast("已替换", icon: "checkmark.circle.fill")
             }
@@ -401,6 +441,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !state.output.isEmpty, state.phase != .streaming else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(state.output, forType: .string)
+        finish(.copied)
         restoreAutoSelection()
         endSession()
         showToast("已复制到剪贴板，原文未改动", icon: "doc.on.clipboard")
@@ -415,6 +456,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Esc / 放弃：不改原文
     func dismiss() {
+        finish(.cancelled)
         polisher.cancel()
         restoreAutoSelection()
         endSession()
@@ -433,6 +475,17 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// 记下这次润色的结局；已记过（run 为空）就不再记：失败后再按 Esc、校验失败后再复制都不会重复
+    func finish(_ o: PolishOutcome) {
+        record(run, o)
+        run = nil
+    }
+
+    func record(_ r: UsageRun?, _ o: PolishOutcome) {
+        guard let r else { return }
+        UsageStore.shared.polish(profile: r.profile, bundle: r.bundle, origin: r.origin, o)
+    }
+
     func endSession() {
         origin = nil
         hidePanel()
@@ -443,6 +496,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.async { [self] in // 回填流程会先自己隐藏面板，等它走完再判断是否真失焦
             let open = (panel.isVisible && !panel.isKeyWindow) || (toastConfirm && toast.isVisible && !toast.isKeyWindow)
             guard open, !panel.isKeyWindow, !toast.isKeyWindow else { return }
+            finish(.dismissed)
             polisher.cancel()
             endSession()
             hideToast()
