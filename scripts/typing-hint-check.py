@@ -14,7 +14,9 @@ import SwiftUI
 import NaturalLanguage
 import PolishCore
 '''+(root / 'Sources/Polish/PanelBackground.swift').read_text()+views+'''
+struct State { var targetLanguage = TypingLanguage.english; var native = TypingLanguage.chinese }
 @MainActor final class Probe {
+ let state = State()
  let model = HintModel()
  let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
  var dismissal = 0
