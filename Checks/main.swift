@@ -355,6 +355,9 @@ do {
                    CGRect(x: 0, y: 2, width: 1, height: 22)] {
         let frame = typingHintFrame(size: size, anchor: anchor, visibleFrame: screen)
         check(frame != nil && screen.contains(frame!) && !frame!.intersects(anchor), "提示避开输入行且不超出屏幕：\(anchor)")
+        if let frame {
+            check(frame.minY >= anchor.maxY + 16 || frame.maxY <= anchor.minY - 16, "提示与输入区域至少间隔 16pt")
+        }
     }
     check(typingHintFrame(size: size, anchor: screen, visibleFrame: screen) == nil, "上下都放不下时不覆盖输入区域")
 }

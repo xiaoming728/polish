@@ -40,7 +40,7 @@ struct PolisherStub { var busy = false; mutating func cancel() {} }
  var sentence = ""; var sentenceResult: (text: String, t: SentenceTranslation)?
  var candidates: (pinyin: String, list: [String]) = ("", [])
  var visible = true; var model = Model()
- var terminal = false; var secureInput = false; var inputBounds: CGRect?; var imeFrame: CGRect?
+ var terminal = false; var secureInput = false; var hintAnchor: CGRect?; var imeFrame: CGRect?
  func inTerminal() -> Bool { terminal }
  func chineseInputActive() -> Bool { true }
  func sentenceChanged() {}
@@ -120,15 +120,20 @@ probe += '''
          "终端未读到候选窗时必须隐藏，不能定位到 AX 返回的窗口第一行")
   IME.frame = CGRect(x: screen.minX + 80, y: screen.midY, width: 200, height: 32)
   let nearCaret = terminalPosition.origin(for: CGSize(width: 420, height: 100))!
-  assert(nearCaret.y == screen.midY + 60, "首次候选位置不能被先前的假光标污染")
-  IME.frame = IME.frame!.offsetBy(dx: 100, dy: 0)
+  assert(nearCaret.y == screen.midY + 70, "首次候选位置不能被先前的假光标污染")
+  IME.frame = IME.frame!.offsetBy(dx: 100, dy: -80)
   let moved = terminalPosition.origin(for: CGSize(width: 420, height: 100))!
-  assert(moved.x == screen.minX + 180, "提示横坐标跟随当前候选窗，不能锁定本句最初的光标位置")
+  assert(moved == nearCaret, "首次定位后候选窗移动，提示仍固定在最初位置")
   IME.frame = nil
   assert(terminalPosition.origin(for: CGSize(width: 420, height: 100)) == moved,
          "候选上屏后沿用最后可信位置，不能跳回终端上方")
+  terminalPosition.hide()
+  IME.frame = CGRect(x: screen.minX + 180, y: screen.midY - 80, width: 200, height: 32)
+  let next = terminalPosition.origin(for: CGSize(width: 420, height: 100))!
+  assert(next.x == screen.minX + 180 && next.y == screen.midY - 10,
+         "本次提示结束后，下次输入重新确定起始位置")
   Selection.caret = nil
-  print("整句、数字、符号、数字选词、长句避让与终端光标回归检查通过")
+  print("整句、数字、符号、数字选词与首次定位固定回归检查通过")
  }
 }
 '''

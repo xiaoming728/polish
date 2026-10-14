@@ -29,7 +29,7 @@ final class TypingAssist {
     private var sentenceResult: (text: String, t: SentenceTranslation)? // 本句（不含正在敲的词）的翻译
     private var candidates: (pinyin: String, list: [String]) = ("", []) // convert 读到的候选，上屏时取用
     private var pid: pid_t = 0
-    private var inputBounds: CGRect? // 本句输入过的行：长句换行后仍避开前面的文字
+    private var hintAnchor: CGRect? // 首次可信的输入位置，本次提示期间固定
     private var imeFrame: CGRect? // 输入法候选窗：读不到光标的应用（微信等）用它定位
     private let panel: NSPanel = {
         let p = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -113,7 +113,7 @@ final class TypingAssist {
         sentenceDebounce?.cancel()
         sentencePolisher.cancel()
         sentenceResult = nil
-        inputBounds = nil
+        hintAnchor = nil
         imeFrame = nil
         model.pairs = []
     }
@@ -122,7 +122,11 @@ final class TypingAssist {
     private func hide() {
         HotKey.unregisterExtra(2)
         HotKey.unregisterExtra(3)
-        guard !sentence.isEmpty else { return fadeOut() }
+        guard !sentence.isEmpty else {
+            hintAnchor = nil
+            imeFrame = nil
+            return fadeOut()
+        }
         let r = sentenceResult?.text == sentence ? sentenceResult?.t : nil
         model.pinyin = sentence
         model.en = r?.en
@@ -457,23 +461,22 @@ final class TypingAssist {
         panel.orderFrontRegardless()
     }
 
-    /// 候选窗紧贴正在输入的行，比 AX 的「输入框第一行」兜底更可靠；无法定位时不遮挡输入。
+    /// 首次显示时按输入位置定位；等待和结果共用锚点，本次输入期间不跟随光标。
     private func origin(for size: NSSize) -> NSPoint? {
-        let el = Selection.focusedElement()
-        let caret = inTerminal() ? nil : el.flatMap(Selection.caretRect)
-        // 上屏后的数字、标点也会让输入换行，不能一直沿用上一个拼音词的候选窗位置。
-        let currentIME = IME.candidates().frame
-        if let frame = currentIME { imeFrame = frame }
-        // 候选窗贴在光标那一行下方：往上补一行高，提示就落在光标行上方而不盖住它
-        let ime = imeFrame.map { CGRect(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height + 22) }
-        Log.write("typing anchor=\(ime != nil ? "ime" : caret != nil ? "caret" : "unavailable") role=\(el.flatMap(Selection.role) ?? "nil") caret=\(caret.map { "\($0)" } ?? "-") ime=\(imeFrame.map { "\($0)" } ?? "-")")
-        let currentCaret = inTerminal() ? nil : el.flatMap(Selection.bounds)
-        let anchor = currentIME != nil ? ime : currentCaret ?? ime ?? caret
-        guard let anchor else { return nil }
+        if hintAnchor == nil {
+            let el = Selection.focusedElement()
+            let caret = inTerminal() ? nil : el.flatMap(Selection.caretRect)
+            let currentIME = IME.candidates().frame
+            if let frame = currentIME { imeFrame = frame }
+            // 候选窗在输入行下方：往上补一行高，给输入文字留出空间。
+            let ime = imeFrame.map { CGRect(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height + 22) }
+            let currentCaret = inTerminal() ? nil : el.flatMap(Selection.bounds)
+            hintAnchor = currentIME != nil ? ime : currentCaret ?? ime ?? caret
+            Log.write("typing anchor fixed=\(hintAnchor != nil) terminal=\(inTerminal())")
+        }
+        guard let anchor = hintAnchor else { return nil }
         let screen = NSScreen.screens.first { $0.frame.contains(anchor.origin) } ?? NSScreen.main!
-        inputBounds = inputBounds.map { $0.union(anchor) } ?? anchor
-        inputBounds?.origin.x = anchor.minX // 纵向避开整句，横向仍跟随当前光标
-        return typingHintFrame(size: size, anchor: inputBounds!, visibleFrame: screen.visibleFrame)?.origin
+        return typingHintFrame(size: size, anchor: anchor, visibleFrame: screen.visibleFrame)?.origin
     }
 
     // MARK: 选择
@@ -520,13 +523,17 @@ struct TypingHintView: View {
                 if let en = model.en { row("⌥1", en, primary: true) } else { pending("⌥1") }
                 if let zh = model.zh { row("⌥2", zh, primary: false) } else { pending("⌥2") }
             } else {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text(model.pinyin).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary).lineLimit(3)
+                HStack(alignment: .top, spacing: 8) {
+                    ProgressView().controlSize(.small).padding(.top, 2)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("正在翻译").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                        Text(model.pinyin).font(.system(size: 13)).lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
         }
-        .padding(.horizontal, 10).padding(.vertical, 6)
+        .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(width: 420, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         .modifier(PanelBackground(cornerRadius: 16))
@@ -538,7 +545,8 @@ struct TypingHintView: View {
                 .padding(.horizontal, 5).padding(.vertical, 1)
                 .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
                 .fixedSize()
-            ProgressView().controlSize(.mini)
+            ProgressView().controlSize(.mini).padding(.top, 2)
+            Text("翻译中…").font(.system(size: 13)).foregroundStyle(.secondary)
         }
     }
 

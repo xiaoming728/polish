@@ -141,7 +141,7 @@ public func typingHintFrame(size: CGSize, anchor: CGRect, visibleFrame: CGRect) 
     let screen = visibleFrame.insetBy(dx: 4, dy: 4)
     guard size.width <= screen.width, size.height <= screen.height else { return nil }
     let x = min(max(anchor.minX, screen.minX), screen.maxX - size.width)
-    for y in [anchor.maxY + 6, anchor.minY - size.height - 6] {
+    for y in [anchor.maxY + 16, anchor.minY - size.height - 16] {
         let frame = CGRect(origin: CGPoint(x: x, y: y), size: size)
         if screen.contains(frame) { return frame }
     }
