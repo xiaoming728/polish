@@ -147,7 +147,7 @@ struct PanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WindowDragArea())
         .modifier(PanelBackground(cornerRadius: 20))
-        .modifier(GlowBorder(cornerRadius: 20, level: glow, failed: { if case .failed = state.phase { return true }; return false }()))
+        .modifier(GlowBorder(cornerRadius: 20, level: glow, failed: { if case .failed = state.phase { return true }; return false }(), done: state.phase == .done))
         .modifier(PopIn(shown: state.panelShown))
     }
 

@@ -874,7 +874,9 @@ struct TypingHintView: View {
 
     var waiting: Bool { model.waiting }
     /// 光边亮度：翻译中全亮，只出了一半结果减半，都出来（含窗口隐藏）不显示；拼音变化不影响
-    var glow: Double { !model.shown || model.error != nil ? 0 : waiting ? 1 : model.en == nil || (model.zh == nil && !model.reverse) ? 0.5 : 0 }
+    var glow: Double { !model.shown || model.error != nil ? 0 : waiting ? 1 : done ? 0 : 0.5 }
+    /// 结果齐了：⌥1 和 ⌥2（反向提示只有 ⌥1）都已出来
+    var done: Bool { model.error == nil && model.en != nil && (model.zh != nil || model.reverse) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -901,7 +903,7 @@ struct TypingHintView: View {
         .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(minWidth: Self.width.lowerBound, alignment: .leading)
         .modifier(PanelBackground(cornerRadius: 20))
-        .modifier(GlowBorder(cornerRadius: 20, level: glow, failed: model.error != nil)) // 与 ⌥P 面板同一种光边
+        .modifier(GlowBorder(cornerRadius: 20, level: glow, failed: model.error != nil, done: done)) // 与 ⌥P 面板同一种光边
         .modifier(PopIn(shown: model.shown))
     }
 
