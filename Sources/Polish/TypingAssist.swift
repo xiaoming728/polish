@@ -586,7 +586,7 @@ final class TypingAssist {
         model.reverse = true
         model.pinyin = text
         model.en = nil
-        model.zh = nil
+        model.zh = text // ⌥2 始终是用户敲的原文，不管是不是默认语言
         model.pairs = []
         model.error = key.isEmpty && !["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "") ? "未配置 API Key（⌥P 菜单 → 设置）" : nil
         show()
@@ -599,10 +599,8 @@ final class TypingAssist {
             guard let self, self.reverseText == text else { return } // 期间又敲了键：结果作废
             switch r {
             case .success(let s):
-                let out = s.trimmingCharacters(in: CharacterSet(charactersIn: "\"“”'` \n"))
-                // 敲的本来就是默认语言：没有可替换的
-                if out.caseInsensitiveCompare(text.trimmingCharacters(in: .whitespaces)) == .orderedSame { return self.hide() }
-                self.model.en = out
+                // 敲的本来就是默认语言时译文与原文相同，照样显示：⌥2 原文始终在
+                self.model.en = s.trimmingCharacters(in: CharacterSet(charactersIn: "\"“”'` \n"))
             case .failure(let e):
                 self.model.error = e.localizedDescription
             }
@@ -787,7 +785,7 @@ final class HintModel: ObservableObject {
     @Published var notice: String?
     @Published var pairs: [SentencePair] = [] // 中英对应的词，同色显示
     @Published var language = TypingLanguage.english // ⌥1 译文的语言
-    @Published var reverse = false // 反向提示：只有 ⌥1（译成默认语言）
+    @Published var reverse = false // 反向提示：⌥1 译成默认语言，⌥2 是用户敲的原文
 }
 
 struct TypingHintView: View {
