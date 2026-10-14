@@ -10,16 +10,16 @@ struct KeyHint: View {
     var body: some View {
         HStack(spacing: 3) {
             if !k.isEmpty {
-                Text(k).font(.system(size: 11, weight: .medium, design: .rounded))
+                Text(k).font(.system(size: 11, weight: .medium, design: .rounded)).fixedSize()
                     .padding(.horizontal, 5).padding(.vertical, 1)
                     .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
             }
-            Text(t).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+            Text(t).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) // 不截断，太长就折行
         }
     }
 }
 
-/// 自动换行的横向排列：一行放不下就折到下一行；单项比整行还宽时压到整行宽（文字截断）
+/// 自动换行的横向排列：一行放不下就折到下一行；单项比整行还宽时压到整行宽（文字折行）
 struct FlowLayout: Layout {
     var spacing: CGFloat = 10, lineSpacing: CGFloat = 6
 
@@ -37,7 +37,7 @@ struct FlowLayout: Layout {
         var frames: [CGRect] = [], x: CGFloat = 0, y: CGFloat = 0, line: CGFloat = 0, maxX: CGFloat = 0
         for v in subviews {
             var s = v.sizeThatFits(.unspecified)
-            s.width = min(s.width, width)
+            if s.width > width { s = v.sizeThatFits(ProposedViewSize(width: width, height: nil)) } // 超宽项按行宽折行，不截断
             if x > 0, x + s.width > width { x = 0; y += line + lineSpacing; line = 0 }
             frames.append(CGRect(origin: CGPoint(x: x, y: y), size: s))
             x += s.width + spacing
