@@ -357,6 +357,14 @@ do {
     let broken = user + "# >>> polish zsh >>>\nmine\n"
     check(RcBlock.remove(broken, id: "zsh") == broken && !RcBlock.has(broken, id: "zsh"), "只有开始标记（被手改坏）：不删任何内容")
     check(RcBlock.remove(user, id: "zsh") == user, "没装过时卸载：原样")
+    // 回归：三块都装好后，非最后一块不能被判成「需更新」（之前用「重装后是否变化」判断，块会被挪到末尾）
+    let three = RcBlock.install(RcBlock.install(RcBlock.install(user, id: "claude", body: "C"), id: "codex", body: "X"), id: "zsh", body: "Z")
+    check(RcBlock.body(three, id: "claude") == "C" && RcBlock.body(three, id: "codex") == "X" && RcBlock.body(three, id: "zsh") == "Z", "按内容判断是否最新，与位置无关")
+    check(RcBlock.body(user, id: "claude") == nil, "没装过：无内容")
+    let upd = RcBlock.install(three, id: "claude", body: "C2")
+    check(upd == three.replacingOccurrences(of: "\nC\n", with: "\nC2\n"), "更新：原地替换，不挪位置")
+    check(RcBlock.install(three, id: "codex", body: "X") == three, "内容相同再装：文件不变")
+    check(RcBlock.body(RcBlock.install(user, id: "zsh", body: "a\nb"), id: "zsh") == "a\nb", "多行内容原样取回")
 }
 
 print(failures == 0 ? "\n全部通过" : "\n\(failures) 项失败")

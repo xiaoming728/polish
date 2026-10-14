@@ -5,15 +5,27 @@ public enum RcBlock {
     static func begin(_ id: String) -> String { "# >>> polish \(id) >>>" }
     static func end(_ id: String) -> String { "# <<< polish \(id) <<<" }
 
-    public static func has(_ rc: String, id: String) -> Bool {
-        range(rc.components(separatedBy: "\n"), id: id) != nil
+    public static func has(_ rc: String, id: String) -> Bool { body(rc, id: id) != nil }
+
+    /// 已安装块的内容（不含标记行）；用来判断是否需要更新，与块在文件中的位置无关
+    public static func body(_ rc: String, id: String) -> String? {
+        let lines = rc.components(separatedBy: "\n")
+        guard let r = range(lines, id: id) else { return nil }
+        return lines[(r.lowerBound + 1)..<r.upperBound].joined(separator: "\n")
     }
 
+    /// 已装过就原地替换（不挪位置），没装过追加到末尾
     public static func install(_ rc: String, id: String, body: String) -> String {
-        var s = remove(rc, id: id)
+        let block = [begin(id), body, end(id)]
+        var lines = rc.components(separatedBy: "\n")
+        if let r = range(lines, id: id) {
+            lines.replaceSubrange(r, with: block)
+            return lines.joined(separator: "\n")
+        }
+        var s = rc
         if !s.isEmpty && !s.hasSuffix("\n") { s += "\n" }
         if !s.isEmpty { s += "\n" }
-        return s + [begin(id), body, end(id)].joined(separator: "\n") + "\n"
+        return s + block.joined(separator: "\n") + "\n"
     }
 
     public static func remove(_ rc: String, id: String) -> String {

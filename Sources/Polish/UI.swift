@@ -365,7 +365,7 @@ struct SnippetBox: View {
 
     var installed: Bool { RcBlock.has(rc, id: id) }
     /// 装过但内容与当前不同（如 Polish.app 换了位置）
-    var stale: Bool { installed && RcBlock.install(rc, id: id, body: code) != rc }
+    var stale: Bool { RcBlock.body(rc, id: id).map { $0 != code } ?? false }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
