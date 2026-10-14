@@ -453,5 +453,20 @@ do {
     check(chinesePunctuation[","] == "，" && chinesePunctuation["."] == "。", "中文标点映射")
 }
 
+// MARK: ⌥1 / ⌥2 替换前核对输入框：删的字只能少不能多，对不上就不删
+do {
+    check(replaceDeletes(before: "前文我爱", committed: "我爱", pinyinKeys: 0) == 2, "光标前以本句结尾：正常替换，删本句字数")
+    check(replaceDeletes(before: "前文我爱ni'hao", committed: "我爱", pinyinKeys: 6) == 2
+          && replaceDeletes(before: "前文我爱ni hao", committed: "我爱", pinyinKeys: 6) == 2, "AX value 含组合态拼音：拼音不计入退格")
+    check(replaceDeletes(before: "前文我恨", committed: "我爱", pinyinKeys: 0) == nil
+          && replaceDeletes(before: "我爱前文", committed: "我爱", pinyinKeys: 0) == nil, "光标前与本句不一致（漏记 / 光标移走）：不删")
+    check(replaceDeletes(before: "前文我爱", committed: "我爱", pinyinKeys: 6) == 2
+          && replaceDeletes(before: "前文我爱nh", committed: "我爱", pinyinKeys: 6) == 2, "输入法吞键、buffer 偏长：仍只删本句，不按键数多删")
+    check(replaceDeletes(before: "前文我爱abc", committed: "我爱", pinyinKeys: 2) == nil, "光标前的字母多于敲过的拼音键：不是拼音，不删")
+    check(replaceDeletes(before: "前文我爱 ", committed: "我爱", pinyinKeys: 0) == nil, "没有组合态时不容忍任何多余字符")
+    check(replaceDeletes(before: "前文", committed: "", pinyinKeys: 3) == 0 && replaceDeletes(before: "", committed: "我爱", pinyinKeys: 0) == nil, "只有拼音时不删已上屏的字；空输入框不删")
+    check(replaceDeletes(before: nil, committed: "我爱", pinyinKeys: 6) == 2, "读不到 AX：按本句字数删（拼音另由 Esc 撤销）")
+}
+
 print(failures == 0 ? "\n全部通过" : "\n\(failures) 项失败")
 exit(failures == 0 ? 0 : 1)

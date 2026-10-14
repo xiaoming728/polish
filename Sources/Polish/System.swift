@@ -159,6 +159,18 @@ enum Selection {
     }
 
     /// 只对 Chromium / Electron 应用打开网页无障碍：AXEnhancedUserInterface 对其他应用有副作用（窗口动画、frame 读错）
+    /// 光标前（含选区，输入法的组合文字可能被报成选区）的文本；应用不暴露 value 或选区时为 nil
+    static func textBeforeCaret(_ el: AXUIElement) -> String? {
+        var v: CFTypeRef?, r: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &v) == .success, let value = v as? NSString,
+              AXUIElementCopyAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, &r) == .success, let r,
+              CFGetTypeID(r) == AXValueGetTypeID() else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(r as! AXValue, .cfRange, &range), range.location >= 0, range.length >= 0,
+              range.location + range.length <= value.length else { return nil }
+        return value.substring(to: range.location + range.length)
+    }
+
     static func isChromiumOrElectron(_ app: NSRunningApplication) -> Bool {
         guard let url = app.bundleURL?.appendingPathComponent("Contents/Frameworks"),
               let names = try? FileManager.default.contentsOfDirectory(atPath: url.path) else { return false }

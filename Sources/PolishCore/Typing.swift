@@ -35,7 +35,7 @@ extension CGEvent {
     }
 }
 
-/// 记录用户在中文输入法下敲的拼音键。text 的长度就是要撤销的按键数（退格次数）
+/// 记录用户在中文输入法下敲的拼音键（输入法可能吞键，长度不能当作退格次数）
 public struct PinyinBuffer: Sendable {
     public private(set) var text = ""
     /// 输入法当前高亮的候选序号（从 0 起）。候选窗不通过 AX 暴露高亮，只能按 → / ← 推算
@@ -60,6 +60,21 @@ public struct PinyinBuffer: Sendable {
         text = ""
         highlight = 0
     }
+}
+
+/// ⌥1 / ⌥2 替换前核对输入框，返回要退格删掉的已上屏字数；nil = 对不上，一个字都不删。
+/// before：光标前的文本（AX 读不到为 nil，只能信本句记录）；committed：本次要删的已上屏文字。
+/// 组合态的拼音由 Esc 撤销、不计入退格；有的应用把它放进 AX value，所以 committed 之后允许跟
+/// 至多 pinyinKeys 个字母的拼音（a–z、'、空格），输入法吞键时只会更短
+public func replaceDeletes(before: String?, committed: String, pinyinKeys: Int) -> Int? {
+    guard let before else { return committed.count }
+    var rest = Substring(before), letters = 0
+    while !rest.hasSuffix(committed) {
+        guard pinyinKeys > 0, let c = rest.popLast(), c == "'" || c == " " || ("a"..."z").contains(c) else { return nil }
+        if c.isLetter { letters += 1 }
+        guard letters <= pinyinKeys else { return nil }
+    }
+    return committed.count
 }
 
 public struct Conversion: Equatable, Sendable {
