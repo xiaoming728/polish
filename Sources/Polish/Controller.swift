@@ -65,7 +65,13 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
         NSApp.mainMenu = editMenu()
-        panel.contentView = NSHostingView(rootView: PanelView(state: state))
+        let host = NSHostingView(rootView: PanelView(state: state))
+        host.sizingOptions = [] // 不让 SwiftUI 内容尺寸约束窗口，否则拉大后会被弹回
+        panel.contentView = host
+        // ⌥P 面板可拖动（按住空白处）、可拉边缘放大；提示胶囊不需要
+        panel.styleMask.insert(.resizable)
+        panel.isMovableByWindowBackground = true
+        panel.minSize = NSSize(width: 360, height: 200)
         for w in [panel, toast] {
             NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: w, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.lostFocus() }
@@ -420,7 +426,8 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func showPanel() {
-        let size = NSSize(width: 460, height: 270)
+        // 沿用用户上次拉出来的大小；位置仍跟随本次选区
+        let size = panel.frame.width > 0 ? panel.frame.size : NSSize(width: 460, height: 270)
         if !panel.isVisible { panel.setFrame(clamp(anchor(for: size), size), display: true) }
         panel.orderFrontRegardless()
         panel.makeKey()
