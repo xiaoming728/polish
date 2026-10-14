@@ -64,7 +64,6 @@ struct PanelView: View {
     var onSwitch: (Int) -> Void = { _ in }
     @State var showSource = false
     @State var showAllProfiles = false
-    @State private var failFlash = false // 请求失败：光边变橙色闪一下再淡出
 
     var problem: (String, Color)? {
         switch state.phase {
@@ -148,19 +147,7 @@ struct PanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WindowDragArea())
         .modifier(PanelBackground(cornerRadius: 20))
-        .overlay { // 光边画在玻璃外面一层；隐藏面板时 glow 归零，旋转动画随视图移除而停止
-            ZStack {
-                if glow > 0 || failFlash {
-                    GlowRing(cornerRadius: 20, tint: failFlash ? .orange : .accentColor).opacity(failFlash ? 1 : glow).transition(.opacity)
-                }
-            }
-            .animation(.easeOut(duration: 0.2), value: glow)
-        }
-        .onChange(of: state.phase) { _, p in
-            guard case .failed = p else { return }
-            failFlash = true
-            DispatchQueue.main.async { withAnimation(.easeOut(duration: 0.2)) { failFlash = false } }
-        }
+        .modifier(GlowBorder(cornerRadius: 20, level: glow, failed: { if case .failed = state.phase { return true }; return false }()))
         .modifier(PopIn(shown: state.panelShown))
     }
 

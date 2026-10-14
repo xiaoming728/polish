@@ -873,6 +873,8 @@ struct TypingHintView: View {
     static let width: ClosedRange<CGFloat> = 240...420 // 宽度随内容
 
     var waiting: Bool { model.waiting }
+    /// 光边亮度：翻译中全亮，只出了一半结果减半，都出来（含窗口隐藏）不显示；拼音变化不影响
+    var glow: Double { !model.shown || model.error != nil ? 0 : waiting ? 1 : model.en == nil || (model.zh == nil && !model.reverse) ? 0.5 : 0 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -898,7 +900,8 @@ struct TypingHintView: View {
         .animation(.easeInOut(duration: 0.15), value: waiting) // 只在「翻译中 ↔ 结果」切换时交叉淡化，拼音变化不动画
         .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(minWidth: Self.width.lowerBound, alignment: .leading)
-        .modifier(PanelBackground(cornerRadius: 16))
+        .modifier(PanelBackground(cornerRadius: 20))
+        .modifier(GlowBorder(cornerRadius: 20, level: glow, failed: model.error != nil)) // 与 ⌥P 面板同一种光边
         .modifier(PopIn(shown: model.shown))
     }
 

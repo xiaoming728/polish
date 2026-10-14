@@ -44,7 +44,32 @@ private struct ShimmerBand: View {
     }
 }
 
-/// ⌥P 面板外圈缓慢旋转的描边光，叠在玻璃背景外面一层
+/// 浮层外圈的光边：level 为亮度（0 不显示，视图移除、旋转停止）；failed 变为 true 时橙色闪一下再淡出
+struct GlowBorder: ViewModifier {
+    let cornerRadius: CGFloat
+    let level: Double
+    let failed: Bool
+    @State private var flash = false
+
+    func body(content: Content) -> some View {
+        content
+            .overlay { // 画在玻璃背景外面一层
+                ZStack {
+                    if level > 0 || flash {
+                        GlowRing(cornerRadius: cornerRadius, tint: flash ? .orange : .accentColor).opacity(flash ? 1 : level).transition(.opacity)
+                    }
+                }
+                .animation(.easeOut(duration: 0.2), value: level)
+            }
+            .onChange(of: failed) { _, f in
+                guard f else { return }
+                flash = true
+                DispatchQueue.main.async { withAnimation(.easeOut(duration: 0.2)) { flash = false } }
+            }
+    }
+}
+
+/// 缓慢旋转的描边光
 struct GlowRing: View {
     let cornerRadius: CGFloat
     let tint: Color
