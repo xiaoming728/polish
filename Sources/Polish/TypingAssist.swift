@@ -23,7 +23,8 @@ final class TypingAssist {
     private var emptyCheck: DispatchWorkItem?
     private var selectAll = false // 上一个键是 ⌘A
     private let polisher = Polisher()
-    private var sentence = "" // 本句已上屏的中文
+    private var sentence = "" // 本句已上屏的中英文
+    private var sentenceNeedsConversion = false // 没读到候选而暂存的拼音，区别于已确认英文
     private var sentenceDebounce: DispatchWorkItem?
     private let sentencePolisher = Polisher()
     private var sentenceResult: (text: String, t: SentenceTranslation)? // 本句（不含正在敲的词）的翻译
@@ -110,6 +111,8 @@ final class TypingAssist {
 
     private func clearSentence() {
         sentence = ""
+        sentenceNeedsConversion = false
+        candidates = ("", [])
         sentenceDebounce?.cancel()
         sentencePolisher.cancel()
         sentenceResult = nil
@@ -130,7 +133,7 @@ final class TypingAssist {
         let r = sentenceResult?.text == sentence ? sentenceResult?.t : nil
         model.pinyin = sentence
         model.en = r?.en
-        model.zh = r.map { hasPinyin(sentence) ? $0.zh ?? sentence : sentence }
+        model.zh = r.map { sentenceNeedsConversion ? $0.zh ?? sentence : sentence }
         model.pairs = r?.pairs ?? []
         model.error = nil
         show()
@@ -219,8 +222,15 @@ final class TypingAssist {
     /// 上屏：有拼音时空格 / 数字 / 标点选中候选（标点再跟一个全角标点）；没拼音时标点直接上屏、退格删掉上一个字
     private func trackSentence(_ code: Int, _ flags: CGEventFlags, _ event: CGEvent) {
         guard state.typingAssist, !isBusy(), !choosing else { return }
-        if code == kVK_Return { return clearSentence() } // 回车：消息已发出或换了行，开始新的一句
+        if code == kVK_Return, buffer.text.isEmpty || !flags.isEmpty { return clearSentence() }
         guard flags.subtracting(.maskShift).isEmpty, !IsSecureEventInputEnabled(), chineseInputActive() else { return }
+        if code == kVK_Return {
+            // 中文组合态回车确认原始字母，不是提交消息；终端未知字母仍不发送。
+            guard !inTerminal() || committed(buffer.highlight) != nil else { return clearSentence() }
+            sentence += buffer.text
+            sentenceChanged()
+            return
+        }
         let c = typedChar(event)
         let punct = c.flatMap { chinesePunctuation[$0] }
         var add = ""
@@ -238,6 +248,7 @@ final class TypingAssist {
                 // 没读到候选（打字太快、候选窗已收起）：先记拼音，整句请求时让模型补成中文
                 Log.write("typing sentence: commit unknown (pick=\(pick)), keep pinyin")
                 add = buffer.text.replacingOccurrences(of: "'", with: "")
+                sentenceNeedsConversion = true
             }
             if digit == nil { add += punct ?? literal ?? "" }
         } else if code == kVK_Delete, flags.isEmpty, !sentence.isEmpty {
@@ -274,8 +285,9 @@ final class TypingAssist {
     }
 
     /// 翻译「本句 + tail」（tail：正在敲的词，候选或拼音；没有为空）。结果直接显示成 ⌥1 / ⌥2
-    private func requestSentence(_ tail: String) {
+    private func requestSentence(_ tail: String, pinyinTail: Bool = false) {
         let s = sentence, pinyin = buffer.text, highlight = buffer.highlight
+        let unresolved = sentenceNeedsConversion
         let p = state.current
         let key = KeyStore.apiKey(p)
         if key.isEmpty && !["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "") {
@@ -285,18 +297,24 @@ final class TypingAssist {
         let t0 = Date()
         sentencePolisher.start(sentenceProfile(p), apiKey: key, text: s + tail, fast: true, onDelta: { _ in }, onDone: { [weak self] r in
             // 期间上屏了新内容、又敲键或换了候选：结果作废
-            guard let self, self.sentence == s, self.buffer.text == pinyin, self.buffer.highlight == highlight else { return }
+            guard let self, self.sentence == s, self.buffer.text == pinyin, self.buffer.highlight == highlight, self.sentenceNeedsConversion == unresolved else { return }
             switch r {
             case .success(let out):
                 guard let t = parseSentence(out) else { self.model.error = "无法解析模型结果"; break }
                 // 本句里没读到候选、先记下的拼音换成模型补全的中文（退格计数要按中文）
-                if hasPinyin(s), let zh = t.zh {
-                    if tail.isEmpty { self.sentence = zh } else if !hasPinyin(tail), zh.hasSuffix(tail) { self.sentence = String(zh.dropLast(tail.count)) }
+                if unresolved, let zh = t.zh {
+                    if tail.isEmpty {
+                        self.sentence = zh
+                        self.sentenceNeedsConversion = false
+                    } else if !pinyinTail, zh.hasSuffix(tail) {
+                        self.sentence = String(zh.dropLast(tail.count))
+                        self.sentenceNeedsConversion = false
+                    }
                 }
                 if tail.isEmpty { self.sentenceResult = (self.sentence, t) }
                 self.model.en = t.en
                 // 没有拼音时用用户实际打的字，不用模型「改过」的
-                self.model.zh = hasPinyin(s + tail) ? t.zh ?? self.sentence + tail : s + tail
+                self.model.zh = unresolved || pinyinTail ? t.zh ?? self.sentence + tail : s + tail
                 self.model.pairs = t.pairs
             case .failure(let e):
                 self.model.error = e.localizedDescription
@@ -324,6 +342,7 @@ final class TypingAssist {
             Log.write("typing cancel in-flight by key=\(kind)")
         }
         buffer.feed(k)
+        if buffer.text.isEmpty { candidates = ("", []) }
         debounce?.cancel()
         polisher.cancel()
         guard buffer.ready else {
@@ -396,7 +415,7 @@ final class TypingAssist {
             model.error = nil
             show()
             registerKeys()
-            return requestSentence(candidate ?? pinyin.replacingOccurrences(of: "'", with: ""))
+            return requestSentence(candidate ?? pinyin.replacingOccurrences(of: "'", with: ""), pinyinTail: candidate == nil)
         }
         model.pinyin = pinyin
         model.en = nil
@@ -439,7 +458,7 @@ final class TypingAssist {
 
     /// 只有对应结果已经出来时才占用 ⌥1 / ⌥2；其余时间不影响它们原本的输入
     private func registerKeys() {
-        guard panel.isVisible, panel.alphaValue > 0, !hasPinyin(sentence) else { return } // 本句里还有没补全的拼音：不知道该退几格
+        guard panel.isVisible, panel.alphaValue > 0, !sentenceNeedsConversion else { return } // 本句里还有没补全的拼音：不知道该退几格
         if model.en != nil { HotKey.registerExtra(2, code: kVK_ANSI_1, mods: optionKey) { [weak self] in self?.choose(english: true) } }
         if model.zh != nil { HotKey.registerExtra(3, code: kVK_ANSI_2, mods: optionKey) { [weak self] in self?.choose(english: false) } }
     }

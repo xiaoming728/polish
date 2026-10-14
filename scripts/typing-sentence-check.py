@@ -15,10 +15,24 @@ def method(name):
 probe = '''import AppKit
 import Carbon
 import PolishCore
-struct State { var typingAssist = true }
-struct PolisherStub { var busy = false; mutating func cancel() {} }
+struct State { var typingAssist = true; var current = defaultProfile() }
+struct PolisherStub {
+ var busy = false
+ static var output = ""
+ func cancel() {}
+ func start(_ p: Profile, apiKey: String, text: String, fast: Bool,
+            onDelta: (String) -> Void, onDone: (Result<String, Error>) -> Void) {
+  onDone(.success(Self.output))
+ }
+}
+struct PanelStub { var isVisible = true; var alphaValue = 1.0 }
+@MainActor enum KeyStore { static func apiKey(_ p: Profile) -> String { "test" } }
 @MainActor enum Log { static func write(_ text: String) {} }
-@MainActor enum HotKey { static func unregisterExtra(_ id: Int) {} }
+@MainActor enum HotKey {
+ static var ids = Set<UInt32>()
+ static func unregisterExtra(_ id: UInt32) { ids.remove(id) }
+ static func registerExtra(_ id: UInt32, code: Int, mods: Int, _ run: @escaping () -> Void) { ids.insert(id) }
+}
 @MainActor enum IME {
  static var frame: CGRect?
  static func candidates() -> (list: [String], frame: CGRect?) { ([], frame) }
@@ -37,6 +51,8 @@ struct PolisherStub { var busy = false; mutating func cancel() {} }
  var state = State(); var isBusy: () -> Bool = { false }; var choosing = false
  var buffer = PinyinBuffer(); var polisher = PolisherStub(); var debounce: DispatchWorkItem?
  var candidateRead: DispatchWorkItem?; var pid: pid_t = 0
+ var panel = PanelStub(); var sentencePolisher = PolisherStub()
+ var sentenceNeedsConversion = false
  var sentence = ""; var sentenceResult: (text: String, t: SentenceTranslation)?
  var candidates: (pinyin: String, list: [String]) = ("", [])
  var visible = true; var model = Model()
@@ -44,13 +60,13 @@ struct PolisherStub { var busy = false; mutating func cancel() {} }
  func inTerminal() -> Bool { terminal }
  func chineseInputActive() -> Bool { true }
  func sentenceChanged() {}
- func clearSentence() { sentence = ""; sentenceResult = nil }
+ func clearSentence() { sentence = ""; sentenceNeedsConversion = false; sentenceResult = nil }
  func convert() {}
  func show() { visible = true }
  func fadeOut() { visible = false }
- func registerKeys() {}
+ func choose(english: Bool) {}
 '''
-probe += '\n'.join(method(n) for n in ['typedChar', 'trackSentence', 'committed', 'classify', 'feed', 'hide', 'origin'])
+probe += '\n'.join(method(n) for n in ['typedChar', 'trackSentence', 'committed', 'classify', 'feed', 'hide', 'origin', 'requestSentence', 'registerKeys'])
 probe += '''
  func press(_ code: Int, char: String) {
   let event = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(code), keyDown: true)!
@@ -78,6 +94,50 @@ probe += '''
   assert(p.sentence == "你好世界 " && p.model.pinyin == "你好世界 " && p.visible, "直接空格加入整句，提示继续保留前文")
   p.press(kVK_Return, char: "\\r")
   assert(p.sentence.isEmpty && !p.visible, "回车结束本句")
+  let mixed = Probe()
+  mixed.word("xiufu", "修复"); mixed.press(kVK_Space, char: " ")
+  mixed.word("bug", "不顾"); mixed.press(kVK_Return, char: "\\r")
+  assert(mixed.sentence == "修复bug" && mixed.buffer.text.isEmpty && mixed.visible,
+         "组合态回车是确认英文：保留中文前文和 bug，不清空整句")
+  mixed.sentenceResult = (mixed.sentence, SentenceTranslation(zh: "修复错误", en: "Fix the bug", pairs: []))
+  mixed.hide()
+  assert(mixed.model.zh == "修复bug", "已确认的英文不是未知拼音，不能用模型改写的中文覆盖原文")
+  PolisherStub.output = #"{"zh":"修复错误","en":"Fix the bug","pairs":[]}"#
+  mixed.requestSentence("")
+  assert(mixed.sentence == "修复bug" && mixed.model.zh == "修复bug",
+         "异步结果应用路径不能重写已确认的英文或退格计数")
+  assert(HotKey.ids == [2, 3], "中英混编的完整结果允许使用 ⌥1 / ⌥2，不误当作未知拼音")
+  mixed.word("le", "了"); mixed.press(kVK_Space, char: " ")
+  assert(mixed.sentence == "修复bug了", "英文上屏后继续拼音输入，整句连续累积")
+  mixed.press(kVK_Return, char: "\\r")
+  assert(mixed.sentence.isEmpty && !mixed.visible, "没有组合态的回车仍结束本次输入")
+  let terminalMixed = Probe(); terminalMixed.terminal = true
+  terminalMixed.word("xiufu", "修复"); terminalMixed.press(kVK_Space, char: " ")
+  terminalMixed.word("bug", "不顾")
+  terminalMixed.press(kVK_Return, char: "\\r")
+  assert(terminalMixed.sentence == "修复bug" && terminalMixed.visible, "终端中文前文后的英文回车不丢整句")
+  terminalMixed.press(kVK_Return, char: "\\r")
+  assert(terminalMixed.sentence.isEmpty, "真正的提交回车仍清空终端整句")
+  let englishMode = Probe(); englishMode.terminal = true
+  englishMode.word("xiufu", "修复"); englishMode.press(kVK_Space, char: " ")
+  for c in "bug" { englishMode.press(kVK_ANSI_B, char: String(c)) }
+  englishMode.press(kVK_Return, char: "\\r")
+  assert(englishMode.sentence.isEmpty, "终端没有候选的英文模式回车是提交，不能误当组合态上屏")
+  let password = Probe(); password.terminal = true
+  for c in "secret" { password.press(kVK_ANSI_S, char: String(c)) }
+  password.press(kVK_Return, char: "\\r")
+  assert(password.sentence.isEmpty, "终端没有已知中文与候选窗时，未知字母不能交给模型")
+  let fallback = Probe(); fallback.word("nihao", "你好"); fallback.press(kVK_Space, char: " ")
+  for c in "shijie" { fallback.press(kVK_ANSI_S, char: String(c)) }
+  fallback.press(kVK_Space, char: " ")
+  assert(fallback.sentenceNeedsConversion, "没读到候选的拼音仍标记为未转换")
+  HotKey.ids.removeAll(); fallback.model.en = "Hello world"; fallback.model.zh = "你好世界"
+  fallback.registerKeys()
+  assert(HotKey.ids.isEmpty, "未知拼音的实际字数未确认，不能允许退格替换")
+  PolisherStub.output = #"{"zh":"你好世界","en":"Hello world","pairs":[]}"#
+  fallback.requestSentence("")
+  assert(fallback.sentence == "你好世界" && !fallback.sentenceNeedsConversion && HotKey.ids == [2, 3],
+         "模型补全未知拼音后恢复准确原文与替换快捷键")
   let numbers = Probe()
   for c in "2026" { numbers.press(kVK_ANSI_2, char: String(c)) }
   assert(numbers.sentence == "2026" && numbers.visible, "直接输入数字应拉起提示")
@@ -133,7 +193,7 @@ probe += '''
   assert(next.x == screen.minX + 180 && next.y == screen.midY - 10,
          "本次提示结束后，下次输入重新确定起始位置")
   Selection.caret = nil
-  print("整句、数字、符号、数字选词与首次定位固定回归检查通过")
+  print("中英混编、整句、数字符号与首次定位固定回归检查通过")
  }
 }
 '''
