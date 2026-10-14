@@ -51,6 +51,12 @@ final class AppState: ObservableObject {
     @Published var typingAssist: Bool { didSet { save() } }
     /// 输入提示的英文先查 macOS 本地词典，查不到再问模型
     @Published var localDictionary: Bool { didSet { save() } }
+    /// 输入提示 ⌥1 的翻译目标语言
+    @Published var targetLanguage: TypingLanguage { didSet { save() } }
+    /// 用户的默认语言；nil 跟随系统首选语言
+    @Published var nativeLanguage: TypingLanguage? { didSet { save() } }
+    /// 在键盘布局（ABC 等）下输入时，提示译成默认语言（⌥1）；会把键盘布局下敲的文字发给模型，默认关
+    @Published var reverseTyping: Bool { didSet { save() } }
     @Published var terminalKey: TerminalKey { didSet { save() } }
 
     @Published var source = ""
@@ -60,6 +66,7 @@ final class AppState: ObservableObject {
     @Published var terminal = false
     @Published var copyOnly = false
 
+    var native: TypingLanguage { nativeLanguage ?? .system() }
     var current: Profile { profiles.first { $0.id == currentID } ?? profiles[0] }
 
     init() {
@@ -75,6 +82,9 @@ final class AppState: ObservableObject {
         hotKey = defaults.data(forKey: "hotKey").flatMap { try? dec.decode(HotKeySpec.self, from: $0) } ?? .standard
         typingAssist = defaults.object(forKey: "typingAssist") as? Bool ?? true
         localDictionary = defaults.object(forKey: "localDictionary") as? Bool ?? true
+        targetLanguage = defaults.string(forKey: "targetLanguage").flatMap(TypingLanguage.init) ?? .english
+        nativeLanguage = defaults.string(forKey: "nativeLanguage").flatMap(TypingLanguage.init)
+        reverseTyping = defaults.bool(forKey: "reverseTyping")
         terminalKey = defaults.string(forKey: "terminalKey").flatMap(TerminalKey.init) ?? .ctrlG
         save() // init 中赋值不触发 didSet，补齐的场景要显式保存
     }
@@ -87,6 +97,9 @@ final class AppState: ObservableObject {
         defaults.set(try? enc.encode(hotKey), forKey: "hotKey")
         defaults.set(typingAssist, forKey: "typingAssist")
         defaults.set(localDictionary, forKey: "localDictionary")
+        defaults.set(targetLanguage.rawValue, forKey: "targetLanguage")
+        defaults.set(nativeLanguage?.rawValue, forKey: "nativeLanguage")
+        defaults.set(reverseTyping, forKey: "reverseTyping")
         defaults.set(terminalKey.rawValue, forKey: "terminalKey")
     }
 }
