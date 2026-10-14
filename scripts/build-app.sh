@@ -13,6 +13,7 @@ BIN=$(swift build -c release --show-bin-path)/Polish
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Polish"
+cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" # 由 assets/logo.svg 生成
 ln -s Polish "$APP/Contents/MacOS/polish-edit" # 按 argv[0] 进入终端编辑器模式
 
 cat > "$APP/Contents/Info.plist" <<EOF
@@ -24,6 +25,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>CFBundleName</key><string>Polish</string>
     <key>CFBundleDisplayName</key><string>Polish</string>
     <key>CFBundleExecutable</key><string>Polish</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$VERSION</string>
