@@ -13,7 +13,9 @@ scripts/build-app.sh --install    # 构建、ad-hoc 签名，并安装到 /Appli
 open /Applications/Polish.app
 ```
 
-首次启动后：
+首次启动后：跟着自动弹出的「使用导引」走（未授权辅助功能或没填 Key 时弹出），之后可在设置 → 通用 → 使用导引… 再次打开。
+
+导引各步对应的手动操作：
 
 1. **授予辅助功能权限**：系统设置 → 隐私与安全性 → 辅助功能 → 打开 Polish。每次重新构建后，都要先移除旧条目再重新添加，因为 ad-hoc 签名的身份会变。
 2. **填写配置**：菜单栏魔杖图标 → 设置… → 配置：选服务商，填 API Key（存在本机 `~/Library/Application Support/Polish/keys.json`，仅你的账号可读）和模型，然后点「测试连接」。

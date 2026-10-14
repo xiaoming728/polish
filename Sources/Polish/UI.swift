@@ -179,9 +179,8 @@ struct ToastView: View {
 struct SettingsView: View {
     @ObservedObject var state: AppState
     let rebind: (HotKeySpec) -> Bool
-    @State var tab = 0
     var body: some View {
-        TabView(selection: $tab) {
+        TabView(selection: $state.settingsTab) {
             ProfilesTab(state: state).tabItem { Label(tr("配置", "Profiles"), systemImage: "slider.horizontal.3") }.tag(0)
             GeneralTab(state: state, rebind: rebind).tabItem { Label(tr("通用", "General"), systemImage: "gearshape") }.tag(1)
             TerminalTab(state: state).tabItem { Label(tr("终端集成", "Terminal"), systemImage: "terminal") }.tag(2)
@@ -361,6 +360,11 @@ struct GeneralTab: View {
 
     var body: some View {
         Form {
+            Section {
+                LabeledContent(tr("第一次使用？", "New to Polish?")) {
+                    Button(tr("使用导引…", "Getting Started…")) { (NSApp.delegate as? Controller)?.openGuide() }
+                }
+            }
             Section(tr("界面语言", "Language")) {
                 Picker(tr("设置界面", "Settings window"), selection: $state.uiLanguage) {
                     Text(tr("跟随系统", "System default")).tag(String?.none)

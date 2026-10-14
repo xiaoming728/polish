@@ -59,7 +59,7 @@ typealias UsageRun = (profile: String, bundle: String, origin: String)
 func bundleID(_ pid: pid_t) -> String { NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "?" }
 
 @MainActor
-final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     let state = AppState()
     let polisher = Polisher()
     let server = EditServer()
@@ -67,6 +67,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let panel = makePanel()
     let toast = makePanel()
     var settings: NSWindow?
+    var guide: NSWindow?
     var toastTimer: Timer?
     var toastConfirm = false
     var origin: Origin?
@@ -117,7 +118,13 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do { try server.start() } catch { showToast("终端集成不可用：\(error.localizedDescription)", icon: "exclamationmark.triangle") }
 
         Log.write("launch trusted=\(Permissions.trusted) listenAccess=\(CGPreflightListenEventAccess())")
-        if !Permissions.trusted { Permissions.prompt() }
+        // 新用户（未授权或没填 Key）首次启动弹导引，不再同时弹系统授权框；已配置好的老用户升级时直接记为已弹过
+        if !state.guideShown && (!Permissions.trusted || KeyStore.apiKey(state.current).isEmpty) {
+            openGuide()
+        } else {
+            state.guideShown = true
+            if !Permissions.trusted { Permissions.prompt() }
+        }
         syncTypingAssist()
         // 菜单或设置里切换开关都只改状态，这里统一启停（$ 发布的是 willSet，延后一拍读新值）
         typingSwitch = state.$typingAssist.dropFirst().sink { [weak self] _ in
@@ -590,7 +597,9 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return false
     }
 
-    func openSettings() {
+    /// tab：0 配置 / 1 通用 / 2 终端集成 / 3 权限与隐私；nil 保持上次的标签页
+    func openSettings(tab: Int? = nil) {
+        if let tab { state.settingsTab = tab }
         if settings == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 580), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             w.isReleasedWhenClosed = false
@@ -609,5 +618,29 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         settings!.makeKeyAndOrderFront(nil)
         settings!.orderFrontRegardless()
+    }
+
+    /// 使用导引：只保留一个窗口，重复打开只提到最前；关闭时释放窗口（连同每秒刷新的计时器）
+    func openGuide() {
+        if guide == nil {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            w.isReleasedWhenClosed = false
+            w.delegate = self
+            w.contentView = NSHostingView(rootView: GuideView(state: state,
+                                                              openSettings: { [weak self] in self?.openSettings(tab: $0) },
+                                                              close: { [weak self] in self?.guide?.close() }))
+            w.center()
+            guide = w
+        }
+        guide!.title = tr("欢迎使用 Polish", "Welcome to Polish")
+        NSApp.activate(ignoringOtherApps: true)
+        guide!.makeKeyAndOrderFront(nil)
+        guide!.orderFrontRegardless()
+    }
+
+    func windowWillClose(_ n: Notification) {
+        guard let w = n.object as? NSWindow, w === guide else { return }
+        state.guideShown = true // 点「完成」或关闭按钮都算看过
+        DispatchQueue.main.async { MainActor.assumeIsolated { if self.guide === w { self.guide = nil } } } // 等 close 返回后再释放
     }
 }

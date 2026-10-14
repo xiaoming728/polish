@@ -75,6 +75,10 @@ final class AppState: ObservableObject {
     @Published var terminalKey: TerminalKey { didSet { save() } }
     /// 设置界面语言："zh" / "en"；nil 跟随系统（tr 直接读 UserDefaults）
     @Published var uiLanguage: String? { didSet { save() } }
+    /// 使用导引已弹出过（关闭即算）；之后启动不再自动弹出
+    @Published var guideShown: Bool { didSet { save() } }
+    /// 设置窗口当前标签页，不持久化；openSettings(tab:) 从外部切换
+    @Published var settingsTab = 0
 
     @Published var source = ""
     @Published var output = ""
@@ -104,6 +108,7 @@ final class AppState: ObservableObject {
         reverseTyping = defaults.bool(forKey: "reverseTyping")
         terminalKey = defaults.string(forKey: "terminalKey").flatMap(TerminalKey.init) ?? .ctrlG
         uiLanguage = defaults.string(forKey: "uiLanguage")
+        guideShown = defaults.bool(forKey: "guideShown")
         save() // init 中赋值不触发 didSet，补齐的场景要显式保存
     }
 
@@ -120,5 +125,6 @@ final class AppState: ObservableObject {
         defaults.set(reverseTyping, forKey: "reverseTyping")
         defaults.set(terminalKey.rawValue, forKey: "terminalKey")
         defaults.set(uiLanguage, forKey: "uiLanguage")
+        defaults.set(guideShown, forKey: "guideShown")
     }
 }
