@@ -1,5 +1,6 @@
 import AppKit
 import PolishCore
+import ServiceManagement
 import SwiftUI
 
 // MARK: - 预览面板（跟随光标的紧凑浮层，见「预览面板、小提示与设置界面的形态」）
@@ -335,6 +336,20 @@ struct GeneralTab: View {
     @State var recording = false
     @State var monitor: Any?
     @State var hint = tr("至少包含 ⌘ / ⌥ / ⌃ 之一；被其他应用占用时会提示并保留原快捷键。", "Must include at least one of ⌘ / ⌥ / ⌃; if another app already uses it, you will be told and the old shortcut is kept.")
+    // 不存 UserDefaults：每次从系统读，用户在「系统设置 → 登录项」里改了也能对上
+    @State var loginStatus = SMAppService.mainApp.status
+    @State var loginError: String?
+    let installed = Bundle.main.bundleURL.path.hasPrefix("/Applications/")
+
+    func setLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            loginError = nil
+        } catch {
+            loginError = error.localizedDescription
+        }
+        loginStatus = SMAppService.mainApp.status
+    }
 
     func stop() {
         if let m = monitor { NSEvent.removeMonitor(m) }
@@ -372,6 +387,29 @@ struct GeneralTab: View {
                     Text("中文").tag(String?.some("zh"))
                     Text("English").tag(String?.some("en"))
                 }
+            }
+            Section(tr("启动", "Startup")) {
+                HStack {
+                    Toggle(tr("登录时自动启动 Polish", "Open Polish at login"),
+                           isOn: Binding(get: { loginStatus == .enabled || loginStatus == .requiresApproval }, set: setLogin))
+                        .disabled(!installed)
+                    if let e = loginError { Text(e).font(.caption).foregroundStyle(.red) }
+                }
+                if !installed {
+                    Text(tr("请先运行 scripts/build-app.sh --install 安装到 /Applications，再从那里启动 Polish 后打开此开关。",
+                            "Install with scripts/build-app.sh --install and launch Polish from /Applications first."))
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if loginStatus == .requiresApproval {
+                    HStack {
+                        Text(tr("需要在「系统设置 → 通用 → 登录项」中允许 Polish。", "Allow Polish in System Settings → General → Login Items."))
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button(tr("打开登录项设置", "Open Login Items")) { SMAppService.openSystemSettingsLoginItems() }
+                    }
+                }
+            }
+            .onAppear { loginStatus = SMAppService.mainApp.status }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                loginStatus = SMAppService.mainApp.status
             }
             Section(tr("快捷键", "Shortcut")) {
                 LabeledContent(tr("润色选中文字", "Polish selected text")) {

@@ -36,7 +36,7 @@
 - 隐私：推翻了 grill 时「不监听输入」的决定。只在中文输入法下读取拼音键。Secure Input、AXSecureTextField 和终端中不工作（终端里可能在英文模式下敲 sudo 密码）。润色流程进行中时暂停。AX 调用超时 0.25s，避免拖住主线程。
 - 残余风险：读不到 AX 的应用里，本句记录若与输入框不符（如漏记），仍可能多删；靠点鼠标、切应用、清空输入框时重置本句来兜底。
 
-**不包含**：账号、云同步、历史记录、OCR、语音、插件系统、开机自启、Developer ID 签名与公证、Gemini 和 Azure 的专用协议、bash 下的回填（bash 中降级为复制）。
+**不包含**：账号、云同步、历史记录、OCR、语音、插件系统、Developer ID 签名与公证、Gemini 和 Azure 的专用协议、bash 下的回填（bash 中降级为复制）。
 
 ## 2. 实现路线比较
 
@@ -117,6 +117,7 @@
   - 授权后 `AXIsProcessTrusted` 能否不重启就变成 true（2026-10-14 实测记录）：本地证书签名下身份固定，覆盖安装后启动即 `trusted=true`，不需要重新授权（已实测）。在列表中首次打开开关后是否实时生效，ad-hoc 与本地证书两种签名都**尚未实测**（需要手动撤销再授予）；导引因此每秒轮询，并在 10 秒仍未打勾时提供「重启 Polish」兜底。
 - **密钥**：本地文件 `~/Library/Application Support/Polish/keys.json`（目录 0700、文件 0600，先写临时文件再原子改名），键为 `base:<Base URL>`，同一服务的场景共用一个 Key。**禁止使用钥匙串**（用户 2026-10-14 要求：无团队 ID 的签名下钥匙串每次升级都弹确认框）。ad-hoc 签名下不能用 data protection keychain。
 - **其他设置**：配置、回填方式、快捷键存在 UserDefaults。
+- **开机自启**：设置 → 通用里的开关，用 `SMAppService.mainApp.register()` / `unregister()`，不需要 helper app；默认关闭。开关状态每次从 `SMAppService.mainApp.status` 读取（窗口出现和 app 激活时刷新），不存 UserDefaults，所以在「系统设置 → 通用 → 登录项」里移除后能同步。只允许从 `/Applications` 启动的实例注册，从 `build/` 启动时开关禁用并提示先 `--install`。实测（2026-10-14，macOS 27）：本地证书签名和 ad-hoc 签名下 `register()` 都直接成功（状态 enabled，未出现 requiresApproval）；登录项按路径 `/Applications/Polish.app` 记录，`build-app.sh --install` 覆盖安装（含换签名）后条目仍为 enabled。
 - **打包**：`scripts/build-app.sh`。步骤为 `swift build -c release` → 组装 `build/Polish.app`（Info.plist 含 `LSUIElement`）→ 创建 `polish-edit` 符号链接 → `codesign -s -` 做 ad-hoc 签名 → `codesign --verify --strict` 校验。
 - **签名**：有本地证书「Polish Local Signing」（`scripts/make-signing-cert.sh`）时用它签名，身份为 bundle id + 证书，重建后辅助功能 / 输入监控授权不失效；否则 ad-hoc，重建后需重新授权。
 
