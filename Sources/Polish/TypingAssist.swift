@@ -18,6 +18,8 @@ final class TypingAssist {
     private var buffer = PinyinBuffer()
     private var debounce: DispatchWorkItem?
     private var candidateRead: DispatchWorkItem?
+    private var emptyCheck: DispatchWorkItem?
+    private var selectAll = false // 上一个键是 ⌘A
     private let polisher = Polisher()
     private var sentence = "" // 本句已上屏的中文
     private var sentenceDebounce: DispatchWorkItem?
@@ -139,6 +141,7 @@ final class TypingAssist {
         let flags = event.flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift])
         // ⌥1 / ⌥2 由热键处理（会被热键吞掉、不进应用）；这里不能把它当成「结束输入」清掉结果
         if panel.isVisible, flags == .maskAlternate, code == kVK_ANSI_1 || code == kVK_ANSI_2 { return }
+        if fieldCleared(code, flags), !sentence.isEmpty { return reset() } // 每个键都要过一遍：记录 ⌘A
         trackSentence(code, flags, event) // 先于 feed：feed 遇到空格等会清空拼音
         feed(classify(code, flags, event))
     }
@@ -146,6 +149,33 @@ final class TypingAssist {
     /// 终端里可能在中文输入法的英文模式下敲 sudo 密码，不处理
     private func excludedApp() -> Bool {
         terminalBundleIDs.contains(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "")
+    }
+
+    /// 输入框被清空就收起整句：⌘A 后删除 / 剪切、⌘⌫ 按键推断（微信等读不到输入框的应用只能这样）；
+    /// 其他删除类按键稍后读输入框字数，能读到且为 0 也收起
+    private func fieldCleared(_ code: Int, _ flags: CGEventFlags) -> Bool {
+        let deletes = code == kVK_Delete || code == kVK_ForwardDelete
+        let cut = flags == .maskCommand && code == kVK_ANSI_X
+        defer { selectAll = flags == .maskCommand && code == kVK_ANSI_A }
+        if (selectAll && ((flags.isEmpty && deletes) || cut)) || (flags == .maskCommand && code == kVK_Delete) {
+            Log.write("typing sentence: field cleared by key")
+            return true
+        }
+        if deletes || cut || (flags == .maskCommand && code == kVK_ANSI_Z) {
+            emptyCheck?.cancel()
+            let w = DispatchWorkItem { [weak self] in MainActor.assumeIsolated {
+                guard let self, !self.sentence.isEmpty, self.buffer.text.isEmpty, let el = Selection.focusedElement() else { return }
+                var v: CFTypeRef?
+                // 字数而不是整段文本：大文档每次复制全文太贵
+                if AXUIElementCopyAttributeValue(el, kAXNumberOfCharactersAttribute as CFString, &v) == .success, (v as? Int) == 0 {
+                    Log.write("typing sentence: field empty")
+                    self.reset()
+                }
+            } }
+            emptyCheck = w
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: w)
+        }
+        return false
     }
 
     private func typedChar(_ event: CGEvent) -> Character? {
