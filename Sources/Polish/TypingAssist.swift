@@ -114,6 +114,7 @@ final class TypingAssist {
         sentencePolisher.cancel()
         sentenceResult = nil
         inputBounds = nil
+        imeFrame = nil
         model.pairs = []
     }
 
@@ -371,7 +372,7 @@ final class TypingAssist {
         // 读输入法当前高亮的候选：中文不必等模型；英文只需翻译这个词（比拼音推断短、快）
         let highlight = buffer.highlight
         let (list, frame) = IME.candidates()
-        imeFrame = frame
+        if let frame { imeFrame = frame }
         candidates = (pinyin, list)
         let candidate = buffer.highlight < list.count ? list[buffer.highlight] : nil
         Log.write("typing convert len=\(pinyin.count) highlight=\(buffer.highlight) candidate=\(candidate != nil) readMs=\(Int(Date().timeIntervalSince(t0) * 1000))")
@@ -459,7 +460,7 @@ final class TypingAssist {
     /// 候选窗紧贴正在输入的行，比 AX 的「输入框第一行」兜底更可靠；无法定位时不遮挡输入。
     private func origin(for size: NSSize) -> NSPoint? {
         let el = Selection.focusedElement()
-        let caret = el.flatMap(Selection.caretRect)
+        let caret = inTerminal() ? nil : el.flatMap(Selection.caretRect)
         // 上屏后的数字、标点也会让输入换行，不能一直沿用上一个拼音词的候选窗位置。
         let currentIME = IME.candidates().frame
         if let frame = currentIME { imeFrame = frame }
@@ -471,6 +472,7 @@ final class TypingAssist {
         guard let anchor else { return nil }
         let screen = NSScreen.screens.first { $0.frame.contains(anchor.origin) } ?? NSScreen.main!
         inputBounds = inputBounds.map { $0.union(anchor) } ?? anchor
+        inputBounds?.origin.x = anchor.minX // 纵向避开整句，横向仍跟随当前光标
         return typingHintFrame(size: size, anchor: inputBounds!, visibleFrame: screen.visibleFrame)?.origin
     }
 

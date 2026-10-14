@@ -24,8 +24,9 @@ struct PolisherStub { var busy = false; mutating func cancel() {} }
  static func candidates() -> (list: [String], frame: CGRect?) { ([], frame) }
 }
 @MainActor enum Selection {
- static func focusedElement() -> Int? { nil }
- static func caretRect(_ el: Int) -> CGRect? { nil }
+ static var caret: CGRect?
+ static func focusedElement() -> Int? { caret == nil ? nil : 1 }
+ static func caretRect(_ el: Int) -> CGRect? { caret }
  static func bounds(_ el: Int) -> CGRect? { nil }
  static func role(_ el: Int) -> String? { nil }
 }
@@ -112,7 +113,22 @@ probe += '''
   IME.frame = first.offsetBy(dx: 0, dy: -80)
   let origin = position.origin(for: CGSize(width: 420, height: 140))!
   assert(origin.y >= first.maxY + 22, "长句换行后提示仍在首行上方，不能遮挡先前输入")
-  print("整句、数字、符号、数字选词、长句避让回归检查通过")
+  let terminalPosition = Probe(); terminalPosition.terminal = true
+  IME.frame = nil
+  Selection.caret = CGRect(x: screen.minX + 4, y: screen.maxY - 24, width: 1, height: 20)
+  assert(terminalPosition.origin(for: CGSize(width: 420, height: 100)) == nil,
+         "终端未读到候选窗时必须隐藏，不能定位到 AX 返回的窗口第一行")
+  IME.frame = CGRect(x: screen.minX + 80, y: screen.midY, width: 200, height: 32)
+  let nearCaret = terminalPosition.origin(for: CGSize(width: 420, height: 100))!
+  assert(nearCaret.y == screen.midY + 60, "首次候选位置不能被先前的假光标污染")
+  IME.frame = IME.frame!.offsetBy(dx: 100, dy: 0)
+  let moved = terminalPosition.origin(for: CGSize(width: 420, height: 100))!
+  assert(moved.x == screen.minX + 180, "提示横坐标跟随当前候选窗，不能锁定本句最初的光标位置")
+  IME.frame = nil
+  assert(terminalPosition.origin(for: CGSize(width: 420, height: 100)) == moved,
+         "候选上屏后沿用最后可信位置，不能跳回终端上方")
+  Selection.caret = nil
+  print("整句、数字、符号、数字选词、长句避让与终端光标回归检查通过")
  }
 }
 '''
