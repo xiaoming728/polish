@@ -78,6 +78,15 @@ struct PanelView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }.frame(maxHeight: 60)
             }.font(.caption)
+            if state.profiles.count > 1, state.phase == .streaming || state.phase == .done {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(Array(state.profiles.prefix(9).enumerated()), id: \.element.id) { i, p in
+                            KeyHint("⌘\(i + 1)", p.name).opacity(p.id == state.currentID ? 1 : 0.55)
+                        }
+                    }
+                }
+            }
             HStack(spacing: 12) { footer }
         }
         .padding(12)
@@ -97,17 +106,13 @@ struct PanelView: View {
     }
 
     @ViewBuilder var footer: some View {
-        let n = min(state.profiles.count, 9)
-        let switchHint = n > 1 ? "⌘1–\(n)" : nil
         switch state.phase {
         case .streaming:
             KeyHint(state.hotKey.name, "取消"); KeyHint("Esc", "放弃")
-            if let s = switchHint { KeyHint(s, "换配置") }
         case .done:
             KeyHint("⏎", acceptLabel)
             if !state.copyOnly { KeyHint("⌘C", "复制") }
             KeyHint("Esc", "放弃")
-            if let s = switchHint { KeyHint(s, "换配置重跑") }
         case .failed:
             KeyHint(state.hotKey.name, "重试"); KeyHint("⌘,", "设置"); KeyHint("Esc", "关闭")
         case .verifyFailed:
