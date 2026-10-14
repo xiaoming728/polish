@@ -1,16 +1,31 @@
 import Foundation
 import PolishCore
 
+/// 设置界面文字：按「界面语言」设置选中文或英文；未设置时跟随系统首选语言（中文系统用中文，其余用英文）
+func tr(_ zh: String, _ en: String) -> String {
+    let lang = UserDefaults.standard.string(forKey: "uiLanguage")
+        ?? (Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "zh" : "en")
+    return lang == "en" ? en : zh
+}
+
 enum FillMode: String, Codable, CaseIterable {
     case preview = "预览"
     case auto = "自动替换"
     case toast = "小提示确认"
 
+    var name: String {
+        switch self {
+        case .preview: return tr(rawValue, "Preview")
+        case .auto: return tr(rawValue, "Replace automatically")
+        case .toast: return tr(rawValue, "Confirm in toast")
+        }
+    }
+
     var detail: String {
         switch self {
-        case .preview: return "弹出预览面板，流式显示结果；⏎ 替换 / ⌘C 复制 / Esc 放弃"
-        case .auto: return "完成后校验通过即直接替换；失败或校验不通过时弹出面板"
-        case .toast: return "不展开全文，完成后出现小提示，⏎ 替换"
+        case .preview: return tr("弹出预览面板，流式显示结果；⏎ 替换 / ⌘C 复制 / Esc 放弃", "Show a preview panel that streams the result; ⏎ replace / ⌘C copy / Esc discard")
+        case .auto: return tr("完成后校验通过即直接替换；失败或校验不通过时弹出面板", "Replace as soon as the result passes checks; show the panel on failure")
+        case .toast: return tr("不展开全文，完成后出现小提示，⏎ 替换", "Show a small toast when done instead of the full text; ⏎ replace")
         }
     }
 }
@@ -24,10 +39,10 @@ enum TerminalKey: String, CaseIterable {
 
     var detail: String {
         switch self {
-        case .ctrlG: return "zsh 输入行、Claude Code、Codex"
-        case .ctrlXCtrlE: return "zsh 输入行、Claude Code、Aider 等 readline / prompt_toolkit 类"
-        case .ctrlX: return "Qoder / qodercn、Gemini CLI、Qwen Code（zsh 输入行不可用）"
-        case .ctrlXE: return "OpenCode（zsh 输入行不可用）"
+        case .ctrlG: return tr("zsh 输入行、Claude Code、Codex", "zsh line editor, Claude Code, Codex")
+        case .ctrlXCtrlE: return tr("zsh 输入行、Claude Code、Aider 等 readline / prompt_toolkit 类", "zsh line editor, Claude Code, Aider and other readline / prompt_toolkit apps")
+        case .ctrlX: return tr("Qoder / qodercn、Gemini CLI、Qwen Code（zsh 输入行不可用）", "Qoder / qodercn, Gemini CLI, Qwen Code (not for the zsh line editor)")
+        case .ctrlXE: return tr("OpenCode（zsh 输入行不可用）", "OpenCode (not for the zsh line editor)")
         }
     }
 }
@@ -58,6 +73,8 @@ final class AppState: ObservableObject {
     /// 在键盘布局（ABC 等）下输入时，提示译成默认语言（⌥1）；会把键盘布局下敲的文字发给模型，默认关
     @Published var reverseTyping: Bool { didSet { save() } }
     @Published var terminalKey: TerminalKey { didSet { save() } }
+    /// 设置界面语言："zh" / "en"；nil 跟随系统（tr 直接读 UserDefaults）
+    @Published var uiLanguage: String? { didSet { save() } }
 
     @Published var source = ""
     @Published var output = ""
@@ -86,6 +103,7 @@ final class AppState: ObservableObject {
         nativeLanguage = defaults.string(forKey: "nativeLanguage").flatMap(TypingLanguage.init)
         reverseTyping = defaults.bool(forKey: "reverseTyping")
         terminalKey = defaults.string(forKey: "terminalKey").flatMap(TerminalKey.init) ?? .ctrlG
+        uiLanguage = defaults.string(forKey: "uiLanguage")
         save() // init 中赋值不触发 didSet，补齐的场景要显式保存
     }
 
@@ -101,5 +119,6 @@ final class AppState: ObservableObject {
         defaults.set(nativeLanguage?.rawValue, forKey: "nativeLanguage")
         defaults.set(reverseTyping, forKey: "reverseTyping")
         defaults.set(terminalKey.rawValue, forKey: "terminalKey")
+        defaults.set(uiLanguage, forKey: "uiLanguage")
     }
 }

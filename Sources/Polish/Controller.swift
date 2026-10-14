@@ -539,7 +539,6 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func openSettings() {
         if settings == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 580), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-            w.title = "Polish 设置"
             w.isReleasedWhenClosed = false
             w.contentView = NSHostingView(rootView: SettingsView(state: state, rebind: { spec in
                 guard HotKey.register(spec) else {
@@ -552,6 +551,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             w.center()
             settings = w
         }
+        settings!.title = tr("Polish 设置", "Polish Settings") // 每次打开时按当前界面语言刷新
         NSApp.activate(ignoringOtherApps: true)
         settings!.makeKeyAndOrderFront(nil)
         settings!.orderFrontRegardless()
