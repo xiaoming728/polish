@@ -18,6 +18,7 @@ final class TypingAssist {
     private var debounce: DispatchWorkItem?
     private let polisher = Polisher()
     private var pid: pid_t = 0
+    private var imeFrame: CGRect? // 输入法候选窗：读不到光标的应用（微信等）用它定位
     private let panel: NSPanel = {
         let p = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         p.level = .popUpMenu
@@ -186,7 +187,8 @@ final class TypingAssist {
         let key = KeyStore.apiKey(p)
         // 读输入法当前高亮的候选：中文不必等模型；英文只需翻译这个词（比拼音推断短、快）
         let highlight = buffer.highlight
-        let list = IME.candidates()
+        let (list, frame) = IME.candidates()
+        imeFrame = frame
         let candidate = buffer.highlight < list.count ? list[buffer.highlight] : nil
         Log.write("typing convert len=\(pinyin.count) highlight=\(buffer.highlight) candidate=\(candidate != nil) readMs=\(Int(Date().timeIntervalSince(t0) * 1000))")
         // 切过的候选已不在当前页、或读不到候选窗：无法确定用户看到的是哪个词，宁可不显示
@@ -248,12 +250,14 @@ final class TypingAssist {
         panel.orderFrontRegardless()
     }
 
-    /// 光标上方（输入法候选窗通常在下方）；取不到光标位置时放在鼠标上方
+    /// 光标上方（输入法候选窗通常在下方）；取不到光标位置时按候选窗推算，再不行放在鼠标上方
     private func origin(for size: NSSize) -> NSPoint {
         let el = Selection.focusedElement()
         let caret = el.flatMap(Selection.caretRect)
-        Log.write("typing anchor=\(caret == nil ? "mouse" : "caret") role=\(el.flatMap(Selection.role) ?? "nil")")
-        let anchor = caret ?? CGRect(origin: NSEvent.mouseLocation, size: .zero)
+        // 候选窗贴在光标那一行下方：往上补一行高，提示就落在光标行上方而不盖住它
+        let ime = imeFrame.map { CGRect(x: $0.minX, y: $0.minY, width: 1, height: $0.height + 22) }
+        Log.write("typing anchor=\(caret != nil ? "caret" : ime != nil ? "ime" : "mouse") role=\(el.flatMap(Selection.role) ?? "nil") caret=\(caret.map { "\($0)" } ?? "-") ime=\(imeFrame.map { "\($0)" } ?? "-")")
+        let anchor = caret ?? ime ?? CGRect(origin: NSEvent.mouseLocation, size: .zero)
         let screen = NSScreen.screens.first { $0.frame.contains(anchor.origin) } ?? NSScreen.main!
         let vf = screen.visibleFrame
         var o = NSPoint(x: anchor.minX, y: anchor.maxY + 6)

@@ -212,14 +212,20 @@ enum Selection {
 
     /// 输入框左上角的一行高矩形（Cocoa 坐标）
     static func firstLine(_ el: AXUIElement) -> CGRect? {
+        guard let f = frame(el) else { return nil }
+        let line = min(f.height, 20)
+        return CGRect(x: f.minX + 4, y: f.maxY - line - 4, width: 1, height: line)
+    }
+
+    /// 元素的屏幕矩形（Cocoa 坐标）
+    static func frame(_ el: AXUIElement) -> CGRect? {
         var pv: CFTypeRef?, sv: CFTypeRef?
         guard AXUIElementCopyAttributeValue(el, kAXPositionAttribute as CFString, &pv) == .success, let pv,
               AXUIElementCopyAttributeValue(el, kAXSizeAttribute as CFString, &sv) == .success, let sv else { return nil }
         var pos = CGPoint.zero, size = CGSize.zero
         guard AXValueGetValue(pv as! AXValue, .cgPoint, &pos), AXValueGetValue(sv as! AXValue, .cgSize, &size), size.height > 0 else { return nil }
-        let line = min(size.height, 20)
         let h = NSScreen.screens.first?.frame.height ?? 0
-        return CGRect(x: pos.x + 4, y: h - pos.y - line - 4, width: 1, height: line)
+        return CGRect(x: pos.x, y: h - pos.y - size.height, width: size.width, height: size.height)
     }
 
     /// 哨兵法：剪贴板仍是哨兵即视为没有选区；结束后恢复原剪贴板
@@ -424,17 +430,17 @@ enum Log {
 // MARK: - 输入法候选窗
 
 enum IME {
-    /// 当前输入法候选窗里当前页的候选（读输入法进程的 AX 树；读不到返回空，调用方退回模型推断）
+    /// 当前输入法候选窗里当前页的候选，及候选窗的屏幕矩形（读输入法进程的 AX 树；读不到返回空，调用方退回模型推断）
     @MainActor
-    static func candidates() -> [String] {
+    static func candidates() -> (list: [String], frame: CGRect?) {
         guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
-              let bp = TISGetInputSourceProperty(src, kTISPropertyBundleID) else { return [] }
+              let bp = TISGetInputSourceProperty(src, kTISPropertyBundleID) else { return ([], nil) }
         let bundleID = Unmanaged<CFString>.fromOpaque(bp).takeUnretainedValue() as String
-        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else { return [] }
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else { return ([], nil) }
         let ax = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(ax, 0.1) // 在打字路径上：宁可读不到也不能卡
         var v: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &v) == .success, let windows = v as? [AXUIElement] else { return [] }
+        guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &v) == .success, let windows = v as? [AXUIElement] else { return ([], nil) }
         var texts: [String] = []
         func walk(_ e: AXUIElement, _ depth: Int) {
             guard depth < 6, texts.count < 40 else { return }
@@ -448,8 +454,13 @@ enum IME {
                 for k in kids { walk(k, depth + 1) }
             }
         }
-        for w in windows { walk(w, 0) }
-        return candidateList(texts)
+        var frame: CGRect?
+        for w in windows {
+            let before = texts.count
+            walk(w, 0)
+            if frame == nil, texts.count > before { frame = Selection.frame(w) } // 有候选文字的窗口才是候选窗
+        }
+        return (candidateList(texts), frame)
     }
 }
 
