@@ -465,9 +465,9 @@ struct TerminalTab: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("在终端（Terminal、Ghostty、iTerm2、kitty、WezTerm、Alacritty、Warp 等）中按快捷键时，Polish 会给当前程序发送下面选定的按键，让它用外部编辑器打开草稿，由 polish-edit 接管；确认后写回输入框，不会自动执行或发送。点「安装」把对应片段写到 ~/.zshrc 末尾（带 Polish 标记，「卸载」只删这一段），然后重开终端。")
+                Text("在终端（Terminal、Ghostty、iTerm2、kitty、WezTerm、Alacritty、Warp 等）中按快捷键时，Polish 会先给当前程序发送下面选定的按键，0.5 秒内没连上再试 Ctrl+G / Ctrl+X 中的另一个，让它用外部编辑器打开草稿，由 polish-edit 读取后立即放回；润色期间 CLI 照常可用，确认后再打开一次写回输入框，不会自动执行或发送。点「安装」把对应片段写到 ~/.zshrc 末尾（带 Polish 标记，「卸载」只删这一段），然后重开终端。")
                     .fixedSize(horizontal: false, vertical: true)
-                Picker("终端中发送的按键", selection: $state.terminalKey) {
+                Picker("优先发送的按键", selection: $state.terminalKey) {
                     ForEach(TerminalKey.allCases, id: \.self) { k in
                         Text("\(k.rawValue)　\(k.detail)").tag(k)
                     }

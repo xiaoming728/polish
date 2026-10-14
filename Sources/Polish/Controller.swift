@@ -56,6 +56,11 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var toastTimer: Timer?
     var toastConfirm = false
     var origin: Origin?
+    var terminalPID: pid_t = 0
+    /// 已确认、等第二次握手写回的终端结果；source 是第一次握手读到的草稿，用来确认输入框没被改过
+    var writeBack: (source: String, text: String)?
+    var terminalKey: TerminalKey = .ctrlG // 本次握手实际生效的按键，写回时沿用
+    var nextKeyAttempt: DispatchWorkItem?
     lazy var typing = TypingAssist(state: state)
     var typingSwitch: AnyCancellable?
     var typingRetry: Timer?
@@ -92,12 +97,6 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         server.onEdit = { [weak self] draft in self?.terminalDraft(draft) }
         server.onTimeout = { [weak self] in self?.terminalTimeout() }
-        server.onDisconnect = { [weak self] in
-            guard let self, case .terminal? = self.origin else { return }
-            self.polisher.cancel()
-            self.endSession()
-            self.showToast("已取消（polish-edit 已退出），原文未改动", icon: "xmark.circle")
-        }
         do { try server.start() } catch { showToast("终端集成不可用：\(error.localizedDescription)", icon: "exclamationmark.triangle") }
 
         Log.write("launch trusted=\(Permissions.trusted) listenAccess=\(CGPreflightListenEventAccess())")
@@ -206,10 +205,12 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let front = NSWorkspace.shared.frontmostApplication else { return }
         if terminalBundleIDs.contains(front.bundleIdentifier ?? "") {
             state.target = "\(front.localizedName ?? "终端") · 输入框"
-            server.arm()
+            terminalPID = front.processIdentifier
+            writeBack = nil
             let ime = TISCopyCurrentKeyboardInputSource().map { Unmanaged<CFString>.fromOpaque(TISGetInputSourceProperty($0.takeRetainedValue(), kTISPropertyInputSourceID)).takeUnretainedValue() as String } ?? "?"
-            Log.write("terminal send \(state.terminalKey) app=\(front.bundleIdentifier ?? "?") ime=\(ime)")
-            Keys.send(state.terminalKey)
+            Log.write("terminal app=\(front.bundleIdentifier ?? "?") ime=\(ime)")
+            // 各家 CLI 的外部编辑器键不同：先发设置里的，没连上再试另一个（Ctrl+G：zsh / Claude / Codex；Ctrl+X：Qoder / Gemini / Qwen）
+            sendTerminalKeys([state.terminalKey, state.terminalKey == .ctrlX ? .ctrlG : .ctrlX])
         } else {
             capturing = true
             Task {
@@ -226,9 +227,41 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    func sendTerminalKeys(_ keys: [TerminalKey]) {
+        nextKeyAttempt?.cancel()
+        guard let k = keys.first else { return }
+        terminalKey = k
+        server.arm() // 每次发键重新计 1.5s 待命
+        Log.write("terminal send \(k)")
+        Keys.send(k)
+        let rest = Array(keys.dropFirst())
+        guard !rest.isEmpty else { return }
+        let w = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.sendTerminalKeys(rest) } }
+        nextKeyAttempt = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: w)
+    }
+
+    /// 两次握手：第一次读到草稿立即原样放回，润色期间 CLI 照常可用；确认后再握手一次写回，草稿变了就不覆盖
     func terminalDraft(_ draft: String) {
+        nextKeyAttempt?.cancel()
+        if let w = writeBack {
+            writeBack = nil
+            guard draft == w.source else {
+                server.reply(.cancel)
+                copyToPasteboard(w.text)
+                showToast("输入框已改动，没有写回。结果已复制到剪贴板", icon: "exclamationmark.triangle", seconds: 4)
+                return
+            }
+            if server.reply(.ok(Data(w.text.utf8))) {
+                showToast("已写回输入框（未发送）", icon: "checkmark.circle.fill")
+            } else {
+                copyToPasteboard(w.text)
+                showToast("写回失败：polish-edit 已退出。结果已复制到剪贴板", icon: "exclamationmark.triangle", seconds: 4)
+            }
+            return
+        }
+        server.reply(.cancel)
         guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            server.reply(.cancel)
             showToast("输入框为空", icon: "exclamationmark.circle")
             return
         }
@@ -236,9 +269,21 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         begin(.terminal)
     }
 
+    func copyToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
     /// 1.5s 内没有 polish-edit 连上：降级为「润色终端选区后复制」
     func terminalTimeout() {
-        Log.write("terminal timeout: polish-edit not connected")
+        nextKeyAttempt?.cancel()
+        Log.write("terminal timeout: polish-edit not connected writeBack=\(writeBack != nil)")
+        if let w = writeBack {
+            writeBack = nil
+            copyToPasteboard(w.text)
+            showToast("写回时没有连上 polish-edit。结果已复制到剪贴板", icon: "exclamationmark.triangle", seconds: 4)
+            return
+        }
         capturing = true
         Task {
             let c = await Selection.capture()
@@ -248,7 +293,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 state.target = "\(c.appName) · 选区（仅复制）"
                 begin(.copyOnly)
             } else {
-                showToast("没有连上 polish-edit：请在 设置 → 终端集成 中安装 shell 片段，并选择当前 CLI 的编辑器按键（qodercn 用 Ctrl+X）。安装后需重启 CLI。若 zsh 草稿被清空，执行 print -z -- $ZLE_LINE_ABORTED 恢复",
+                showToast("没有连上 polish-edit（已试 Ctrl+G 和 Ctrl+X）：请在 设置 → 终端集成 中安装 shell 片段，安装后需重启 CLI；OpenCode、Aider 等需在设置里选对应按键。若 zsh 草稿被清空，执行 print -z -- $ZLE_LINE_ABORTED 恢复",
                           icon: "terminal", seconds: 6)
             }
         }
@@ -311,14 +356,18 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let text = state.output
         switch o {
         case .terminal:
-            let delivered = server.reply(.ok(Data(text.utf8)))
+            let source = state.source
             endSession()
-            if delivered {
-                showToast("已写回输入框（未发送）", icon: "checkmark.circle.fill")
-            } else {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(text, forType: .string)
-                showToast("写回失败：polish-edit 已退出。结果已复制到剪贴板", icon: "exclamationmark.triangle", seconds: 4)
+            hideToast()
+            Task {
+                await sleepMs(60) // 面板收起、按键回到终端后再发
+                guard NSWorkspace.shared.frontmostApplication?.processIdentifier == terminalPID else {
+                    copyToPasteboard(text)
+                    showToast("前台已不是原终端，没有写回。结果已复制到剪贴板", icon: "exclamationmark.triangle", seconds: 4)
+                    return
+                }
+                writeBack = (source, text)
+                sendTerminalKeys([terminalKey])
             }
         case .copyOnly:
             copyResult()
@@ -347,7 +396,6 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !state.output.isEmpty, state.phase != .streaming else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(state.output, forType: .string)
-        if case .terminal? = origin { server.reply(.cancel) }
         restoreAutoSelection()
         endSession()
         showToast("已复制到剪贴板，原文未改动", icon: "doc.on.clipboard")
@@ -363,7 +411,6 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Esc / 放弃：不改原文
     func dismiss() {
         polisher.cancel()
-        if case .terminal? = origin { server.reply(.cancel) }
         restoreAutoSelection()
         endSession()
         hideToast()
@@ -392,7 +439,6 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let open = (panel.isVisible && !panel.isKeyWindow) || (toastConfirm && toast.isVisible && !toast.isKeyWindow)
             guard open, !panel.isKeyWindow, !toast.isKeyWindow else { return }
             polisher.cancel()
-            if case .terminal? = origin { server.reply(.cancel) }
             endSession()
             hideToast()
         }

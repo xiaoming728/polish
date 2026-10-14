@@ -1,6 +1,7 @@
 import Foundation
 import NaturalLanguage
 import CoreGraphics
+import Carbon.HIToolbox
 
 /// 输入时中英提示：键盘事件归类后喂给拼音缓冲
 public enum TypingKey: Equatable, Sendable {
@@ -10,6 +11,28 @@ public enum TypingKey: Equatable, Sendable {
     case candidateNext // → ：输入法高亮移到下一个候选（拼音不变）
     case candidatePrev // ← ：上一个候选
     case other // 空格、回车、数字、标点、其他方向键、带修饰键的组合等：本次拼音输入结束
+}
+
+extension TypingKey {
+    /// 中文输入法下、不带修饰键的按键归类；composing：当前有未上屏的拼音（← / → 才是换候选）
+    public static func classify(code: Int, char: Character?, composing: Bool) -> TypingKey {
+        if code == kVK_Delete { return .backspace }
+        if composing, code == kVK_RightArrow { return .candidateNext }
+        if composing, code == kVK_LeftArrow { return .candidatePrev }
+        guard let c = char else { return .other }
+        if c == "'" { return .apostrophe }
+        return ("a"..."z").contains(c) ? .letter(c) : .other
+    }
+}
+
+extension CGEvent {
+    /// 按键产生的单个字符（受当前键盘布局与 Shift 影响）；多字符或无字符返回 nil
+    public var typedCharacter: Character? {
+        var len = 0
+        var chars = [UniChar](repeating: 0, count: 4)
+        keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &len, unicodeString: &chars)
+        return len == 1 ? Unicode.Scalar(chars[0]).map(Character.init) : nil
+    }
 }
 
 /// 记录用户在中文输入法下敲的拼音键。text 的长度就是要撤销的按键数（退格次数）

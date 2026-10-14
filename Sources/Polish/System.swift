@@ -433,17 +433,30 @@ enum IME {
     /// 当前输入法候选窗里当前页的候选，及候选窗的屏幕矩形（读输入法进程的 AX 树；读不到返回空，调用方退回模型推断）
     @MainActor
     static func candidates() -> (list: [String], frame: CGRect?) {
+        let pid = currentPID()
+        guard pid != 0 else { return ([], nil) }
+        let r = candidates(pid: pid, deadline: .distantFuture)
+        return (r.list, r.window.flatMap(Selection.frame))
+    }
+
+    /// 当前输入法的进程；读不到为 0
+    @MainActor
+    static func currentPID() -> pid_t {
         guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
-              let bp = TISGetInputSourceProperty(src, kTISPropertyBundleID) else { return ([], nil) }
+              let bp = TISGetInputSourceProperty(src, kTISPropertyBundleID) else { return 0 }
         let bundleID = Unmanaged<CFString>.fromOpaque(bp).takeUnretainedValue() as String
-        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else { return ([], nil) }
-        let ax = AXUIElementCreateApplication(app.processIdentifier)
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.processIdentifier ?? 0
+    }
+
+    /// 只用 AX，任何线程可调；超过 deadline 就停止遍历，返回已读到的部分。window：有候选文字的窗口
+    nonisolated static func candidates(pid: pid_t, deadline: Date) -> (list: [String], window: AXUIElement?) {
+        let ax = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(ax, 0.1) // 在打字路径上：宁可读不到也不能卡
         var v: CFTypeRef?
         guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &v) == .success, let windows = v as? [AXUIElement] else { return ([], nil) }
         var texts: [String] = []
         func walk(_ e: AXUIElement, _ depth: Int) {
-            guard depth < 6, texts.count < 40 else { return }
+            guard depth < 6, texts.count < 40, Date() < deadline else { return }
             var r: CFTypeRef?
             if AXUIElementCopyAttributeValue(e, kAXRoleAttribute as CFString, &r) == .success, r as? String == kAXStaticTextRole as String {
                 var t: CFTypeRef?
@@ -454,13 +467,13 @@ enum IME {
                 for k in kids { walk(k, depth + 1) }
             }
         }
-        var frame: CGRect?
+        var window: AXUIElement?
         for w in windows {
             let before = texts.count
             walk(w, 0)
-            if frame == nil, texts.count > before { frame = Selection.frame(w) } // 有候选文字的窗口才是候选窗
+            if window == nil, texts.count > before { window = w } // 有候选文字的窗口才是候选窗
         }
-        return (candidateList(texts), frame)
+        return (candidateList(texts), window)
     }
 }
 

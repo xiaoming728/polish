@@ -4,9 +4,51 @@ import PolishCore
 import NaturalLanguage
 import SwiftUI
 
+/// 上屏键放行前读候选（跑在 tap 线程）：主动 tap 拦着上屏键时输入法还没收到它，候选窗一定还在，
+/// 读取不再和输入法收起候选窗赛跑。只在有未上屏拼音时读，其余按键原样立即放行。
+final class CommitGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _ime: pid_t = 0
+    private var _held: (pinyin: String, list: [String]) = ("", [])
+    private var pinyin = PinyinBuffer() // 只在 tap 线程读写
+    private var readable = Set<pid_t>() // 读到过候选的输入法：候选窗还没画出来时才值得等
+
+    /// 当前中文输入法进程；不是中文输入法为 0（主线程更新）
+    var ime: pid_t {
+        get { lock.withLock { _ime } }
+        set { lock.withLock { _ime = newValue } }
+    }
+
+    /// 最近一次上屏键前读到的候选；pinyin 与主线程缓冲一致才可用
+    var held: (pinyin: String, list: [String]) { lock.withLock { _held } }
+
+    func hold(_ type: CGEventType, _ event: CGEvent) {
+        guard type == .keyDown else { return pinyin.reset() }
+        guard event.getIntegerValueField(.eventSourceUserData) != Keys.marker else { return }
+        let pid = ime
+        let flags = event.flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift])
+        guard pid != 0, flags.isEmpty else { return pinyin.reset() }
+        let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
+        let k = TypingKey.classify(code: code, char: event.typedCharacter, composing: !pinyin.text.isEmpty)
+        if k == .other, !pinyin.text.isEmpty {
+            // shortcut: 最多拦 80ms，输入法候选窗读不到 AX 时仍会漏读；遇到再按输入法单独处理
+            let deadline = Date().addingTimeInterval(0.08)
+            var list = IME.candidates(pid: pid, deadline: deadline).list
+            while list.isEmpty, readable.contains(pid), Date() < deadline {
+                usleep(5000)
+                list = IME.candidates(pid: pid, deadline: deadline).list
+            }
+            if !list.isEmpty { readable.insert(pid) }
+            let read = (pinyin.text, list)
+            lock.withLock { _held = read }
+        }
+        pinyin.feed(k)
+    }
+}
+
 /// 输入时中英提示：中文输入法下敲拼音时，在光标上方显示英文（⌥1，默认）和中文（⌥2）两个候选。
 /// 选中后用退格撤销刚敲的拼音键（候选态与已上屏两种情况都适用），再粘贴所选文本。
-/// 监听用 listen-only tap：不拦截、不阻塞任何按键；⌥1 / ⌥2 只在有结果时临时注册为 Carbon 热键。
+/// 监听用独立线程上的主动 tap：只有上屏键会被拦到读完候选（CommitGate），处理都异步回主线程；⌥1 / ⌥2 只在有结果时临时注册为 Carbon 热键。
 /// 选词上屏的内容和中文标点累积成一句，提示框显示「整句 + 正在敲的词」的英文 / 中文，常驻到点鼠标、切换应用、回车或输入框清空；
 /// 这时 ⌥1 / ⌥2 退格删掉整句再粘贴。
 @MainActor
@@ -16,6 +58,8 @@ final class TypingAssist {
     var isBusy: () -> Bool = { false }
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
+    private var tapLoop: CFRunLoop?
+    nonisolated let gate = CommitGate()
     private var choosing = false
     private var buffer = PinyinBuffer()
     private var debounce: DispatchWorkItem?
@@ -49,6 +93,9 @@ final class TypingAssist {
     init(state: AppState) {
         self.state = state
         panel.contentView = NSHostingView(rootView: TypingHintView(model: model))
+        DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshIME() }
+        }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
             // 只在真的换到另一个普通应用时重置：系统授权弹窗、输入法候选窗等后台进程被激活不算；
             // 提示框首次弹出时系统会对当前应用重发激活通知，也不算（实测 TextEdit）
@@ -74,20 +121,36 @@ final class TypingAssist {
             return false
         }
         let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.leftMouseDown.rawValue) | (1 << CGEventType.rightMouseDown.rawValue)
-        guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .tailAppendEventTap, options: .listenOnly,
+        // 主动 tap 才能在输入法收到上屏键之前读候选；放在独立线程，主线程卡顿不会拖慢全局键盘
+        guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                         eventsOfInterest: CGEventMask(mask), callback: { _, type, event, info in
             let me = Unmanaged<TypingAssist>.fromOpaque(info!).takeUnretainedValue()
-            MainActor.assumeIsolated { me.handle(type, event) }
+            me.gate.hold(type, event)
+            let copy = event.copy() ?? event // 放行后系统可能复用原事件
+            DispatchQueue.main.async { MainActor.assumeIsolated { me.handle(type, copy) } }
             return Unmanaged.passUnretained(event)
         }, userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
             CGRequestListenEventAccess() // 弹出「输入监控」授权
             return false
         }
         let src = CFMachPortCreateRunLoopSource(nil, t, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
+        let ready = DispatchSemaphore(value: 0)
+        var loop: CFRunLoop?
+        let thread = Thread {
+            loop = CFRunLoopGetCurrent()
+            CFRunLoopAddSource(loop, src, .commonModes)
+            ready.signal()
+            CFRunLoopRun()
+        }
+        thread.name = "Polish typing tap"
+        thread.qualityOfService = .userInteractive
+        thread.start()
+        ready.wait()
         CGEvent.tapEnable(tap: t, enable: true)
         tap = t
         source = src
+        tapLoop = loop
+        refreshIME()
         return true
     }
 
@@ -96,10 +159,19 @@ final class TypingAssist {
             CGEvent.tapEnable(tap: t, enable: false)
             CFMachPortInvalidate(t)
         }
-        if let src = source { CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes) }
+        if let src = source, let loop = tapLoop {
+            CFRunLoopRemoveSource(loop, src, .commonModes)
+            CFRunLoopStop(loop)
+        }
         tap = nil
         source = nil
+        tapLoop = nil
         reset()
+    }
+
+    /// 告诉 tap 线程当前是不是中文输入法、进程是哪个（TIS 只能在主线程调用）
+    private func refreshIME() {
+        gate.ime = chineseInputActive() ? IME.currentPID() : 0
     }
 
     func reset() {
@@ -216,12 +288,7 @@ final class TypingAssist {
         return false
     }
 
-    private func typedChar(_ event: CGEvent) -> Character? {
-        var len = 0
-        var chars = [UniChar](repeating: 0, count: 4)
-        event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &len, unicodeString: &chars)
-        return len == 1 ? Unicode.Scalar(chars[0]).map(Character.init) : nil
-    }
+    private func typedChar(_ event: CGEvent) -> Character? { event.typedCharacter }
 
     /// 上屏：有拼音时空格 / 数字 / 标点选中候选（标点再跟一个全角标点）；没拼音时标点直接上屏、退格删掉上一个字
     private func trackSentence(_ code: Int, _ flags: CGEventFlags, _ event: CGEvent) {
@@ -247,7 +314,7 @@ final class TypingAssist {
                 add = word
             } else if inTerminal() {
                 guard !sentence.isEmpty else { return clearSentence() } // 没有可信前文：不处理终端未知输入。
-                Log.write("typing sentence: commit unknown in terminal, preserve prefix")
+                Log.write("typing sentence: commit unknown in terminal, preserve prefix buf=\(buffer.text.count) held=\(gate.held.pinyin.count)/\(gate.held.list.count) ime=\(gate.ime)")
                 // shortcut: 终端漏读后只保留前文，能可靠读取完整输入时恢复整句跟踪
                 sentenceIncomplete = true
                 sentenceDebounce?.cancel()
@@ -255,7 +322,7 @@ final class TypingAssist {
                 return
             } else {
                 // 没读到候选（打字太快、候选窗已收起）：先记拼音，整句请求时让模型补成中文
-                Log.write("typing sentence: commit unknown (pick=\(pick)), keep pinyin")
+                Log.write("typing sentence: commit unknown (pick=\(pick)), keep pinyin buf=\(buffer.text.count) held=\(gate.held.pinyin.count)/\(gate.held.list.count) ime=\(gate.ime)")
                 add = buffer.text.replacingOccurrences(of: "'", with: "")
                 sentenceNeedsConversion = true
             }
@@ -275,9 +342,11 @@ final class TypingAssist {
         sentenceChanged()
     }
 
-    /// 刚上屏的是哪个候选：用 convert 读到的；按键太快还没读到就现读（输入法此时多半还没收起候选窗）
+    /// 刚上屏的是哪个候选：优先用上屏键放行前读到的（CommitGate），其次 convert / 提前读取的，最后现读
     private func committed(_ index: Int) -> String? {
-        let list = candidates.pinyin == buffer.text ? candidates.list : IME.candidates().list
+        let held = gate.held
+        let list = held.pinyin == buffer.text && !held.list.isEmpty ? held.list
+            : candidates.pinyin == buffer.text ? candidates.list : IME.candidates().list
         return index < list.count ? list[index] : nil
     }
 
@@ -336,12 +405,7 @@ final class TypingAssist {
 
     private func classify(_ code: Int, _ flags: CGEventFlags, _ event: CGEvent) -> TypingKey {
         guard flags.isEmpty, !IsSecureEventInputEnabled(), chineseInputActive() else { return .other }
-        if code == kVK_Delete { return .backspace }
-        if !buffer.text.isEmpty, code == kVK_RightArrow { return .candidateNext }
-        if !buffer.text.isEmpty, code == kVK_LeftArrow { return .candidatePrev }
-        guard let c = typedChar(event) else { return .other }
-        if c == "'" { return .apostrophe }
-        return ("a"..."z").contains(c) ? .letter(c) : .other
+        return .classify(code: code, char: typedChar(event), composing: !buffer.text.isEmpty)
     }
 
     private func feed(_ k: TypingKey) {
