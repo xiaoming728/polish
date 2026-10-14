@@ -110,7 +110,7 @@ final class TypingAssist {
     private var imeFrame: CGRect? // 输入法候选窗：读不到光标的应用（微信等）用它定位
     private let panel: NSPanel = {
         let p = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        p.level = .popUpMenu
+        p.level = .floating // 与 ⌥P 面板同层级：popUpMenu 层级的固定尺寸窗口，系统玻璃会渲染得更深，两种浮层底色不一致
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = true
@@ -127,6 +127,7 @@ final class TypingAssist {
         self.state = state
         let host = NSHostingView(rootView: TypingHintView(model: model))
         host.sizingOptions = [] // 窗口尺寸只由 show() 按测量结果设置，不让 SwiftUI 内容自行改窗口
+        host.roundCorners(20)
         panel.contentView = host
         DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshIME() }
@@ -875,7 +876,7 @@ struct TypingHintView: View {
     var waiting: Bool { model.waiting }
     /// 光边亮度：翻译中全亮，只出了一半结果减半，都出来（含窗口隐藏）不显示；拼音变化不影响
     var glow: Double { !model.shown || model.error != nil ? 0 : waiting ? 1 : done ? 0 : 0.5 }
-    /// 结果齐了：⌥1 和 ⌥2（反向提示只有 ⌥1）都已出来
+    /// 结果齐了：⌥1 和 ⌥2（反向提示只有 ⌥1）都已出来；变为 true 时光边绿色闪一下
     var done: Bool { model.error == nil && model.en != nil && (model.zh != nil || model.reverse) }
 
     var body: some View {

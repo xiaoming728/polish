@@ -1,21 +1,28 @@
+import AppKit
 import SwiftUI
 
 /// 两种浮层使用同一种系统材质，让透明度、深浅色与辅助功能设置由 macOS 处理。
 struct PanelBackground: ViewModifier {
     let cornerRadius: CGFloat
 
+    @ViewBuilder
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        glass(content, shape).overlay(shape.strokeBorder(Color.primary.opacity(0.1))) // 两种浮层同一条细边框
-    }
-
-    @ViewBuilder
-    private func glass(_ content: Content, _ shape: RoundedRectangle) -> some View {
         if #available(macOS 26, *) {
-            // 玻璃的通透度随面积和窗口焦点变化（小提示框更透），统一着色让两种浮层底色一致
-            content.glassEffect(.regular.tint(Color(nsColor: .windowBackgroundColor).opacity(0.5)), in: shape)
+            content.glassEffect(.regular, in: shape)
         } else {
             content.background(.regularMaterial, in: shape)
+                .overlay(shape.strokeBorder(Color.primary.opacity(0.1)))
         }
+    }
+}
+
+extension NSView {
+    /// 浮层窗口的内容图层裁成与背景同样的圆角：焦点窗口的系统阴影按方形窗口计算，不裁会在圆角外露出方角黑框
+    func roundCorners(_ radius: CGFloat) {
+        wantsLayer = true
+        layer?.cornerRadius = radius
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
     }
 }

@@ -45,7 +45,7 @@ private struct ShimmerBand: View {
 }
 
 /// 浮层外圈的光边：level 为亮度（0 不显示，视图移除、旋转停止）；
-/// failed 变为 true 时橙色闪一下再淡出；done 期间保留淡绿细边（静态），变为 true 时先亮绿加粗闪一下再收细
+/// failed 变为 true 时橙色闪一下再淡出；done 变为 true 时亮起一圈绿色光晕，停留片刻后淡出
 struct GlowBorder: ViewModifier {
     let cornerRadius: CGFloat
     let level: Double
@@ -53,7 +53,6 @@ struct GlowBorder: ViewModifier {
     let done: Bool
     @State private var flash = false
     @State private var doneFlash = false
-    @Environment(\.accessibilityReduceMotion) private var reduce
 
     func body(content: Content) -> some View {
         content
@@ -62,16 +61,19 @@ struct GlowBorder: ViewModifier {
                     if level > 0 || flash {
                         GlowRing(cornerRadius: cornerRadius, tint: flash ? .orange : .accentColor).opacity(flash ? 1 : level).transition(.opacity)
                     }
-                    if done {
-                        // 窗口与内容等大，外扩会被裁掉：用描边由粗变细表现「放大再收回」
-                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .strokeBorder(Color.green.opacity(doneFlash ? 1 : 0.4), lineWidth: doneFlash && !reduce ? 3 : 1)
-                            .allowsHitTesting(false)
-                            .transition(.opacity)
+                    if doneFlash {
+                        // 窗口与内容等大，往外扩会被裁掉：粗描边加向内的柔光
+                        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        ZStack {
+                            shape.strokeBorder(Color.green.opacity(0.6), lineWidth: 10).blur(radius: 8)
+                            shape.strokeBorder(Color.green, lineWidth: 2.5)
+                        }
+                        .clipShape(shape)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
                     }
                 }
                 .animation(.easeOut(duration: 0.2), value: level)
-                .animation(.easeOut(duration: 0.2), value: done)
             }
             .onChange(of: failed) { _, f in
                 guard f else { return }
@@ -80,8 +82,8 @@ struct GlowBorder: ViewModifier {
             }
             .onChange(of: done) { _, d in
                 guard d else { return }
-                doneFlash = true
-                DispatchQueue.main.async { withAnimation(.easeOut(duration: 0.2)) { doneFlash = false } }
+                withAnimation(.easeOut(duration: 0.15)) { doneFlash = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { withAnimation(.easeOut(duration: 0.25)) { doneFlash = false } }
             }
     }
 }

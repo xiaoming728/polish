@@ -94,6 +94,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
         NSApp.mainMenu = editMenu()
         let host = NSHostingView(rootView: PanelView(state: state, onSwitch: { [weak self] in self?.switchProfile($0) }))
         host.sizingOptions = [] // 不让 SwiftUI 内容尺寸约束窗口，否则拉大后会被弹回
+        host.roundCorners(20)
         panel.contentView = host
         // ⌥P 面板可拖动（按住空白处）、可拉边缘放大；提示胶囊不需要
         panel.styleMask.insert(.resizable)
