@@ -46,6 +46,15 @@ func authorize(_ r: inout URLRequest, _ p: Profile, _ apiKey: String) {
     }
 }
 
+/// 关闭思考的方言参数，只对已知服务发送（未知服务乱发会报错）。
+/// 润色和输入提示都不需要推理；实测 deepseek-flash 润色首字 1243ms → 633ms。用户可用「额外请求体 JSON」重新打开
+public func noThinking(_ p: Profile) -> [String: Any] {
+    let host = URL(string: p.baseURL.trimmingCharacters(in: .whitespaces))?.host ?? ""
+    if host.hasSuffix("deepseek.com") { return ["thinking": ["type": "disabled"]] }
+    if host.contains("dashscope") { return ["enable_thinking": false] }
+    return [:]
+}
+
 /// 润色请求：指令作 system，原文包在 <text> 中声明为待润色文本；额外 JSON 按顶层键覆盖默认值。
 public func makeRequest(_ p: Profile, apiKey: String, text: String) throws -> URLRequest {
     let user = ["role": "user", "content": "<text>\n\(text)\n</text>"]
@@ -58,6 +67,7 @@ public func makeRequest(_ p: Profile, apiKey: String, text: String) throws -> UR
         body["messages"] = [user]
         body["max_tokens"] = 4096
     }
+    body.merge(noThinking(p)) { _, new in new }
     let extra = p.extraJSON.trimmingCharacters(in: .whitespacesAndNewlines)
     if !extra.isEmpty {
         guard let obj = (try? JSONSerialization.jsonObject(with: Data(extra.utf8))) as? [String: Any] else {

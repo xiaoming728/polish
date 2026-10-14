@@ -124,9 +124,49 @@ func round(_ pinyin: String, english: Bool) {
     check(!after.contains("¡") && !after.contains("™"), "「\(pinyin)」：⌥\(english ? 1 : 2) 没有漏进应用（¡ / ™）")
 }
 
+func candidates() -> [String] {
+    guard let we = NSRunningApplication.runningApplications(withBundleIdentifier: "com.tencent.inputmethod.wetype").first else { return [] }
+    var texts: [String] = []
+    func walk(_ e: AXUIElement) {
+        var r: CFTypeRef?, v: CFTypeRef?, c: CFTypeRef?
+        if AXUIElementCopyAttributeValue(e, kAXRoleAttribute as CFString, &r) == .success, r as? String == "AXStaticText",
+           AXUIElementCopyAttributeValue(e, kAXValueAttribute as CFString, &v) == .success, let s = v as? String { texts.append(s) }
+        if AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &c) == .success, let k = c as? [AXUIElement] { k.forEach(walk) }
+    }
+    var w: CFTypeRef?
+    if AXUIElementCopyAttributeValue(AXUIElementCreateApplication(we.processIdentifier), kAXWindowsAttribute as CFString, &w) == .success,
+       let ws = w as? [AXUIElement] { ws.forEach(walk) }
+    var out: [String] = []
+    for (i, t) in texts.enumerated() where Int(t) != nil && i + 1 < texts.count && Int(texts[i + 1]) == nil { out.append(texts[i + 1]) }
+    return out
+}
+
+/// 切换候选：敲拼音后按 → 两次，提示框应跟随到第 3 个候选，⌥2 上屏的就是它
+func roundFollow(_ pinyin: String) {
+    let before = documentText()
+    let mark = logLines().count
+    for c in pinyin { key(codes[c]!) }
+    guard waitLog(after: mark, contains: "typing result", timeout: 15) != nil else {
+        check(false, "「\(pinyin)」→→：首个结果没出来"); return
+    }
+    let mark2 = logLines().count
+    key(kVK_RightArrow)
+    key(kVK_RightArrow)
+    let result = waitLog(after: mark2, contains: "typing result", timeout: 15)
+    let followed = logLines().dropFirst(mark2).contains { $0.contains("highlight=2 candidate=true") }
+    let expected = candidates().dropFirst(2).first ?? "?"
+    check(followed && result?.contains("ok=true") == true, "「\(pinyin)」→→：提示框跟随到第 3 个候选「\(expected)」并重新出结果", result ?? "（没有新结果）")
+    key(kVK_ANSI_2, .maskAlternate)
+    usleep(1_500_000)
+    let added = String(documentText().dropFirst(before.count))
+    check(added.trimmingCharacters(in: .newlines) == expected, "「\(pinyin)」→→ ⌥2：上屏的是第 3 个候选", "\(added.debugDescription) 期望 \(expected.debugDescription)")
+}
+
 round("nihao", english: true)
 key(kVK_Return)
 round("shijie", english: false)
+key(kVK_Return)
+roundFollow("nihao")
 
 cleanup()
 print(failures == 0 ? "\n全部通过" : "\n\(failures) 项失败")

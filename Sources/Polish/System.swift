@@ -409,17 +409,17 @@ enum Log {
 // MARK: - 输入法候选窗
 
 enum IME {
-    /// 当前输入法候选窗里的第一候选（读输入法进程的 AX 树；读不到返回 nil，调用方退回模型推断）
+    /// 当前输入法候选窗里当前页的候选（读输入法进程的 AX 树；读不到返回空，调用方退回模型推断）
     @MainActor
-    static func firstCandidate() -> String? {
+    static func candidates() -> [String] {
         guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
-              let bp = TISGetInputSourceProperty(src, kTISPropertyBundleID) else { return nil }
+              let bp = TISGetInputSourceProperty(src, kTISPropertyBundleID) else { return [] }
         let bundleID = Unmanaged<CFString>.fromOpaque(bp).takeUnretainedValue() as String
-        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else { return nil }
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else { return [] }
         let ax = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(ax, 0.1) // 在打字路径上：宁可读不到也不能卡
         var v: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &v) == .success, let windows = v as? [AXUIElement] else { return nil }
+        guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &v) == .success, let windows = v as? [AXUIElement] else { return [] }
         var texts: [String] = []
         func walk(_ e: AXUIElement, _ depth: Int) {
             guard depth < 6, texts.count < 40 else { return }
@@ -434,6 +434,6 @@ enum IME {
             }
         }
         for w in windows { walk(w, 0) }
-        return PolishCore.firstCandidate(texts)
+        return candidateList(texts)
     }
 }

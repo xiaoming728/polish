@@ -127,6 +127,8 @@ final class TypingAssist {
     private func classify(_ code: Int, _ flags: CGEventFlags, _ event: CGEvent) -> TypingKey {
         guard flags.isEmpty, !IsSecureEventInputEnabled(), chineseInputActive(), !excludedApp() else { return .other }
         if code == kVK_Delete { return .backspace }
+        if !buffer.text.isEmpty, code == kVK_RightArrow { return .candidateNext }
+        if !buffer.text.isEmpty, code == kVK_LeftArrow { return .candidatePrev }
         var len = 0
         var chars = [UniChar](repeating: 0, count: 4)
         event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &len, unicodeString: &chars)
@@ -152,7 +154,9 @@ final class TypingAssist {
         pid = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
         let w = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.convert() } }
         debounce = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: w)
+        // 切换候选：等输入法重绘后立即换算；打字：流畅打字按键间隔约 150ms，250ms 仍能合并连续输入
+        let delay = (k == .candidateNext || k == .candidatePrev) ? 0.1 : 0.25
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: w)
     }
 
     /// 中文输入法（输入模式 / 输入法，语言为中文）才处理；ABC 等键盘布局下字母就是英文本身
@@ -180,9 +184,18 @@ final class TypingAssist {
         let t0 = Date()
         var p = state.current
         let key = KeyStore.apiKey(p)
-        // 读输入法的第一候选：中文不必等模型；英文只需翻译这个词（比拼音推断短、快）
-        let candidate = IME.firstCandidate()
-        Log.write("typing convert len=\(pinyin.count) candidate=\(candidate != nil) readMs=\(Int(Date().timeIntervalSince(t0) * 1000))")
+        // 读输入法当前高亮的候选：中文不必等模型；英文只需翻译这个词（比拼音推断短、快）
+        let highlight = buffer.highlight
+        let list = IME.candidates()
+        let candidate = buffer.highlight < list.count ? list[buffer.highlight] : nil
+        Log.write("typing convert len=\(pinyin.count) highlight=\(buffer.highlight) candidate=\(candidate != nil) readMs=\(Int(Date().timeIntervalSince(t0) * 1000))")
+        // 切过的候选已不在当前页、或读不到候选窗：无法确定用户看到的是哪个词，宁可不显示
+        if candidate == nil && buffer.highlight > 0 {
+            hide()
+            return
+        }
+        HotKey.unregisterExtra(2)
+        HotKey.unregisterExtra(3)
         model.pinyin = pinyin
         model.en = nil
         model.zh = candidate
@@ -192,7 +205,7 @@ final class TypingAssist {
         guard model.error == nil else { return }
         p.instruction = candidate == nil ? typingInstruction : translateInstruction
         polisher.start(p, apiKey: key, text: candidate ?? pinyin, fast: true, onDelta: { _ in }, onDone: { [weak self] r in
-            guard let self, self.buffer.text == pinyin else { return } // 期间又敲了键：结果作废
+            guard let self, self.buffer.text == pinyin, self.buffer.highlight == highlight else { return } // 期间又敲键或换了候选：结果作废
             switch r {
             case .success(let s):
                 if candidate != nil {

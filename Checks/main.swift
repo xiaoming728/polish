@@ -275,5 +275,45 @@ do {
     check(translateInstruction.contains("<text>") && !translateInstruction.contains("JSON"), "翻译指令只要译文，不要 JSON")
 }
 
+// MARK: ⌥P 润色也默认关闭思考（实测 deepseek-flash 首字 1243ms → 633ms）
+
+do {
+    let ds = Profile(name: "x", preset: "DeepSeek", wire: .openAI, baseURL: "https://api.deepseek.com", model: "m", instruction: "i", extraJSON: "")
+    let b = body(try makeRequest(ds, apiKey: "k", text: "t"))
+    check((b["thinking"] as? [String: String]) == ["type": "disabled"] && b["max_tokens"] == nil, "润色：DeepSeek 关闭思考，但不限长（润色结果可能很长）")
+    var keep = ds
+    keep.extraJSON = #"{"thinking":{"type":"enabled"}}"#
+    check((body(try makeRequest(keep, apiKey: "k", text: "t"))["thinking"] as? [String: String]) == ["type": "enabled"], "润色：用户可用额外 JSON 打开思考")
+    let other = Profile(name: "x", preset: "自定义", wire: .openAI, baseURL: "https://example.com/v1", model: "m", instruction: "i", extraJSON: "")
+    let ob = body(try makeRequest(other, apiKey: "k", text: "t"))
+    check(ob["thinking"] == nil && ob["enable_thinking"] == nil, "润色：未知服务不发方言参数")
+}
+
+// MARK: 切换候选时跟随高亮（实测微信输入法：→ +1，← −1；↓ 展开多行面板、= 改分词，无法推算）
+
+do {
+    let texts = ["candidate shortcut icon", "1", "你好", "2", "👋", "3", "泥嚎", "4", "几号"]
+    check(candidateList(texts) == ["你好", "👋", "泥嚎", "几号"], "按序号取出当前页候选列表")
+    check(candidateList(["你好", "泥嚎"]) == ["你好", "泥嚎"], "没有序号时取含汉字的文本")
+
+    var b = PinyinBuffer()
+    for c in "nihao" { b.feed(.letter(c)) }
+    check(b.highlight == 0, "打字后高亮在第 1 个")
+    b.feed(.candidateNext); b.feed(.candidateNext)
+    check(b.highlight == 2 && b.text == "nihao", "→ 两次：高亮第 3 个，拼音不变")
+    b.feed(.candidatePrev)
+    check(b.highlight == 1, "← 一次：回到第 2 个")
+    b.feed(.candidatePrev); b.feed(.candidatePrev)
+    check(b.highlight == 0, "不会小于第 1 个")
+    b.feed(.candidateNext)
+    b.feed(.letter("a"))
+    check(b.highlight == 0, "再打字：输入法重新排候选，高亮回到第 1 个")
+    b.feed(.candidateNext)
+    b.feed(.backspace)
+    check(b.highlight == 0, "退格同样回到第 1 个")
+    b.feed(.other)
+    check(b.text.isEmpty && b.highlight == 0, "其他键结束输入")
+}
+
 print(failures == 0 ? "\n全部通过" : "\n\(failures) 项失败")
 exit(failures == 0 ? 0 : 1)
