@@ -18,6 +18,7 @@ open /Applications/Polish.app
 1. **授予辅助功能权限**：系统设置 → 隐私与安全性 → 辅助功能 → 打开 Polish。每次重新构建后，都要先移除旧条目再重新添加，因为 ad-hoc 签名的身份会变。
 2. **填写配置**：菜单栏魔杖图标 → 设置… → 配置：选服务商，填 API Key（存在本机 `~/Library/Application Support/Polish/keys.json`，仅你的账号可读）和模型，然后点「测试连接」。
 3. **终端集成（可选）**：设置 → 终端集成，对「zsh 输入行」和「终端 Agent 与其他程序」分别点「安装」（后者把 `$VISUAL`/`$EDITOR` 指向 polish-edit，Claude Code、Codex、Gemini CLI、OpenCode、Aider 等都适用；不是 Polish 触发时照常打开原编辑器），并按常用的 Agent 选「终端中发送的按键」（Ctrl+G / Ctrl+X Ctrl+E / Ctrl+X / Ctrl+X E）（写入 `~/.zshrc` 末尾带标记的一段，「卸载」只删这一段，改动前备份到 `~/.zshrc.polish-backup`），然后重开终端。
+4. **开机自启（可选）**：设置 → 通用 → 「登录时自动启动 Polish」。需从 `/Applications/Polish.app` 启动才能打开；在「系统设置 → 通用 → 登录项」里移除也会同步关闭。
 
 ## 使用
 
