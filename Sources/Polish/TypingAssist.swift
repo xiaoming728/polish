@@ -424,8 +424,9 @@ final class TypingAssist {
         let caret = el.flatMap(Selection.caretRect)
         // 候选窗贴在光标那一行下方：往上补一行高，提示就落在光标行上方而不盖住它
         let ime = imeFrame.map { CGRect(x: $0.minX, y: $0.minY, width: 1, height: $0.height + 22) }
-        Log.write("typing anchor=\(caret != nil ? "caret" : ime != nil ? "ime" : "mouse") role=\(el.flatMap(Selection.role) ?? "nil") caret=\(caret.map { "\($0)" } ?? "-") ime=\(imeFrame.map { "\($0)" } ?? "-")")
-        let anchor = caret ?? ime ?? CGRect(origin: NSEvent.mouseLocation, size: .zero)
+        Log.write("typing anchor=\((inTerminal() && ime != nil) || caret == nil ? (ime != nil ? "ime" : "mouse") : "caret") role=\(el.flatMap(Selection.role) ?? "nil") caret=\(caret.map { "\($0)" } ?? "-") ime=\(imeFrame.map { "\($0)" } ?? "-")")
+        // 终端报的光标位置不可信（实测 Ghostty 固定报窗口左上角），优先跟输入法候选窗走
+        let anchor = (inTerminal() ? ime ?? caret : caret ?? ime) ?? CGRect(origin: NSEvent.mouseLocation, size: .zero)
         let screen = NSScreen.screens.first { $0.frame.contains(anchor.origin) } ?? NSScreen.main!
         let vf = screen.visibleFrame
         var o = NSPoint(x: anchor.minX, y: anchor.maxY + 6)

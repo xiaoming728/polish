@@ -207,6 +207,8 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if terminalBundleIDs.contains(front.bundleIdentifier ?? "") {
             state.target = "\(front.localizedName ?? "终端") · 输入框"
             server.arm()
+            let ime = TISCopyCurrentKeyboardInputSource().map { Unmanaged<CFString>.fromOpaque(TISGetInputSourceProperty($0.takeRetainedValue(), kTISPropertyInputSourceID)).takeUnretainedValue() as String } ?? "?"
+            Log.write("terminal send \(state.terminalKey) app=\(front.bundleIdentifier ?? "?") ime=\(ime)")
             Keys.send(state.terminalKey)
         } else {
             capturing = true
@@ -236,6 +238,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 1.5s 内没有 polish-edit 连上：降级为「润色终端选区后复制」
     func terminalTimeout() {
+        Log.write("terminal timeout: polish-edit not connected")
         capturing = true
         Task {
             let c = await Selection.capture()
