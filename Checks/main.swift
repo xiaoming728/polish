@@ -426,6 +426,9 @@ do {
     let sp = sentenceProfile(ds, .english)
     check(sp.instruction == sentenceInstruction(.english), "整句用整句指令")
     check(sentenceProfile(ds, .german).instruction.contains("德文"), "整句按目标语言出指令")
+    check(TypingLanguage.system(["en-US", "zh-Hans-CN"]) == .english && TypingLanguage.system(["it-IT", "ja-JP"]) == .japanese
+          && TypingLanguage.system(["it-IT"]) == .chinese && TypingLanguage.system([]) == .chinese, "默认语言取系统首选里第一个支持的，都不支持按中文")
+    check(reverseInstruction(from: .english, to: .japanese).contains("通常是英文") && reverseInstruction(from: .english, to: .japanese).contains("自然、地道的日文"), "反向指令从目标语言译成默认语言")
     if !fastOverrides(ds).isEmpty, fastOverrides(ds)["max_tokens"] != nil {
         check(body(try! fastRequest(sp, apiKey: "k", text: "你好"))["max_tokens"] as? Int == 400, "限长服务整句放宽到 400")
     }

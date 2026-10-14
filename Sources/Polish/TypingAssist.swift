@@ -30,6 +30,7 @@ final class TypingAssist {
     private let sentencePolisher = Polisher()
     private var sentenceResult: (text: String, t: SentenceTranslation)? // 本句（不含正在敲的词）的翻译
     private var candidates: (pinyin: String, list: [String]) = ("", []) // convert 读到的候选，上屏时取用
+    private var reverseText = "" // 反向提示：键盘布局下本段敲的文字
     private var pid: pid_t = 0
     private var hintAnchor: CGRect? // 首次可信的输入位置，本次提示期间固定
     private var imeFrame: CGRect? // 输入法候选窗：读不到光标的应用（微信等）用它定位
@@ -104,6 +105,8 @@ final class TypingAssist {
 
     func reset() {
         buffer.reset()
+        reverseText = ""
+        model.reverse = false
         debounce?.cancel()
         polisher.cancel()
         clearSentence()
@@ -180,6 +183,8 @@ final class TypingAssist {
         // ⌥1 / ⌥2 由热键处理（会被热键吞掉、不进应用）；这里不能把它当成「结束输入」清掉结果
         if panel.isVisible, flags == .maskAlternate, code == kVK_ANSI_1 || code == kVK_ANSI_2 { return }
         if fieldCleared(code, flags), !sentence.isEmpty { return reset() } // 每个键都要过一遍：记录 ⌘A
+        if reverseActive() { return trackReverse(code, flags, event) }
+        if !reverseText.isEmpty { reset() } // 从键盘布局切回了输入法
         trackSentence(code, flags, event) // 先于 feed：feed 遇到空格等会清空拼音
         feed(classify(code, flags, event))
     }
@@ -388,17 +393,92 @@ final class TypingAssist {
         return langs.first?.hasPrefix("zh") == true
     }
 
+    private func keyboardLayoutActive() -> Bool {
+        guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+              let typePtr = TISGetInputSourceProperty(src, kTISPropertyInputSourceType) else { return false }
+        return Unmanaged<CFString>.fromOpaque(typePtr).takeUnretainedValue() as String == kTISTypeKeyboardLayout as String
+    }
+
+    private func secureFieldFocused() -> Bool {
+        guard let el = Selection.focusedElement() else { return false }
+        var v: CFTypeRef?
+        return AXUIElementCopyAttributeValue(el, kAXSubroleAttribute as CFString, &v) == .success && v as? String == kAXSecureTextFieldSubrole as String
+    }
+
+    // MARK: 反向提示：键盘布局下敲的外文译成默认语言
+
+    /// 终端里键盘布局下敲的可能是命令或密码，不发给模型
+    private func reverseActive() -> Bool {
+        state.typingAssist && state.reverseTyping && !isBusy() && !choosing && !inTerminal()
+            && !IsSecureEventInputEnabled() && keyboardLayoutActive()
+    }
+
+    /// 本段到回车、点鼠标、带 ⌘⌃⌥ 的组合键或方向键等为止；停顿后整段翻译，⌥1 退格删掉本段再粘贴译文
+    private func trackReverse(_ code: Int, _ flags: CGEventFlags, _ event: CGEvent) {
+        if !buffer.text.isEmpty || !sentence.isEmpty { reset() } // 从中文输入法切过来
+        // shortcut: ⌥e 等死键输入的重音字母也当作结束本段，需要时再跟踪死键状态
+        guard flags.subtracting(.maskShift).isEmpty else { return reset() }
+        if code == kVK_Delete {
+            guard !reverseText.isEmpty else { return }
+            reverseText.removeLast()
+        } else if let c = typedChar(event), c == " " || c.isLetter || c.isNumber || c.isPunctuation || c.isSymbol {
+            reverseText.append(c)
+        } else {
+            return reset()
+        }
+        pid = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+        debounce?.cancel()
+        polisher.cancel()
+        HotKey.unregisterExtra(2) // 旧译文对应的不是现在这段文字
+        guard reverseText.filter(\.isLetter).count >= 2 else { return hide() }
+        if panel.isVisible {
+            model.en = nil
+            model.pinyin = reverseText
+            show()
+        }
+        let w = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.requestReverse() } }
+        debounce = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: w)
+    }
+
+    private func requestReverse() {
+        let text = reverseText
+        guard !secureFieldFocused() else { return hide() }
+        let p = state.current
+        let key = KeyStore.apiKey(p)
+        model.reverse = true
+        model.pinyin = text
+        model.en = nil
+        model.zh = nil
+        model.pairs = []
+        model.error = key.isEmpty && !["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "") ? "未配置 API Key（⌥P 菜单 → 设置）" : nil
+        show()
+        guard model.error == nil else { return }
+        var q = sentenceProfile(p, state.native) // 一段文字比单词长：沿用整句的限长
+        q.instruction = reverseInstruction(from: state.targetLanguage, to: state.native)
+        let t0 = Date()
+        polisher.start(q, apiKey: key, text: text, fast: true, onDelta: { _ in }, onDone: { [weak self] r in
+            guard let self, self.reverseText == text else { return } // 期间又敲了键：结果作废
+            switch r {
+            case .success(let s):
+                let out = s.trimmingCharacters(in: CharacterSet(charactersIn: "\"“”'` \n"))
+                // 敲的本来就是默认语言：没有可替换的
+                if out.caseInsensitiveCompare(text.trimmingCharacters(in: .whitespaces)) == .orderedSame { return self.hide() }
+                self.model.en = out
+            case .failure(let e):
+                self.model.error = e.localizedDescription
+            }
+            Log.write("typing reverse len=\(text.count) ok=\(self.model.en != nil) ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
+            self.show()
+            self.registerKeys()
+        })
+    }
+
     // MARK: 转换与显示
 
     private func convert() {
         let pinyin = buffer.text
-        // 密码框不发送
-        if let el = Selection.focusedElement() {
-            var v: CFTypeRef?
-            if AXUIElementCopyAttributeValue(el, kAXSubroleAttribute as CFString, &v) == .success, v as? String == kAXSecureTextFieldSubrole as String {
-                return
-            }
-        }
+        if secureFieldFocused() { return } // 密码框不发送
         let t0 = Date()
         var p = state.current
         let key = KeyStore.apiKey(p)
@@ -475,7 +555,7 @@ final class TypingAssist {
 
     private func show() {
         dismissal += 1 // 新结果出现时，旧淡出的完成回调不能隐藏它
-        model.language = state.targetLanguage
+        model.language = model.reverse ? state.native : state.targetLanguage
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0
             panel.animator().alphaValue = 1
@@ -516,7 +596,7 @@ final class TypingAssist {
             reset()
             return
         }
-        let count = buffer.text.count + sentence.count // 正在敲的拼音 + 本句已上屏的字
+        let count = model.reverse ? reverseText.count : buffer.text.count + sentence.count // 正在敲的拼音 + 本句已上屏的字
         Log.write("typing choose english=\(english) backspaces=\(count) len=\(text.count)")
         reset()
         choosing = true
@@ -541,7 +621,8 @@ final class HintModel: ObservableObject {
     @Published var error: String?
     @Published var notice: String?
     @Published var pairs: [SentencePair] = [] // 中英对应的词，同色显示
-    @Published var language = TargetLanguage.english
+    @Published var language = TypingLanguage.english // ⌥1 译文的语言
+    @Published var reverse = false // 反向提示：只有 ⌥1（译成默认语言）
 }
 
 struct TypingHintView: View {
@@ -556,7 +637,7 @@ struct TypingHintView: View {
                 Label(e, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
             } else if model.en != nil || model.zh != nil {
                 if let en = model.en { row("⌥1", en, primary: true) } else { pending("⌥1") }
-                if let zh = model.zh { row("⌥2", zh, primary: false) } else { pending("⌥2") }
+                if let zh = model.zh { row("⌥2", zh, primary: false) } else if !model.reverse { pending("⌥2") }
             } else {
                 HStack(alignment: .top, spacing: 8) {
                     ProgressView().controlSize(.small).padding(.top, 2)

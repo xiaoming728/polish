@@ -330,8 +330,14 @@ struct GeneralTab: View {
             Section("输入时中英提示") {
                 Toggle("中文输入法下敲拼音时，在光标上方显示 ⌥1 \(state.targetLanguage.rawValue) / ⌥2 中文", isOn: $state.typingAssist)
                 Picker("⌥1 翻译成", selection: $state.targetLanguage) {
-                    ForEach(TargetLanguage.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    ForEach(TypingLanguage.allCases.filter { $0 != .chinese }, id: \.self) { Text($0.rawValue).tag($0) }
                 }.disabled(!state.typingAssist)
+                Picker("默认语言", selection: $state.nativeLanguage) {
+                    Text("跟随系统（\(TypingLanguage.system().rawValue)）").tag(TypingLanguage?.none)
+                    ForEach(TypingLanguage.allCases, id: \.self) { Text($0.rawValue).tag(Optional($0)) }
+                }.disabled(!state.typingAssist)
+                Toggle("在键盘布局（ABC 等）下输入时，提示译成\(state.native.rawValue)，⌥1 替换（会把敲的文字发给模型；终端、密码框中不工作）", isOn: $state.reverseTyping)
+                    .disabled(!state.typingAssist)
                 Toggle("英文优先查 macOS 本地词典（牛津英汉汉英词典，离线、即时；短语和查不到的词再问模型）", isOn: $state.localDictionary)
                     .disabled(!state.typingAssist || state.targetLanguage != .english)
                 Text("停顿约 0.25 秒后，把正在输入的拼音发给当前配置的模型换算；按 ⌥1 / ⌥2 用所选内容替换刚敲的拼音。只在中文输入法激活时工作；密码框、安全输入和终端中不工作。需要「输入监控」权限。替换时按敲过的键数退格撤销拼音：个别输入法若在组合态吞掉按键，可能多删光标前的字，可用 ⌘Z 撤销。")
