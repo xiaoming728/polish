@@ -1,0 +1,9 @@
+#!/bin/sh
+# stub: 若 app 未触发（无标记文件），转交原编辑器
+f="$1"
+if [ -e "$POLISH_TRIGGER" ]; then
+  rm -f "$POLISH_TRIGGER"
+  printf 'echo POLISHED-1\necho POLISHED-2' > "$f"
+else
+  exec ${VISUAL:-${EDITOR:-vi}} "$@"
+fi
