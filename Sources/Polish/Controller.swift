@@ -597,7 +597,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
         return false
     }
 
-    /// tab：0 配置 / 1 通用 / 2 终端集成 / 3 权限与隐私；nil 保持上次的标签页
+    /// tab：0 配置 / 1 通用 / 2 终端集成 / 3 使用统计 / 4 权限与隐私；nil 保持上次的标签页
     func openSettings(tab: Int? = nil) {
         if let tab { state.settingsTab = tab }
         if settings == nil {
