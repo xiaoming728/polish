@@ -185,7 +185,8 @@ struct SettingsView: View {
             ProfilesTab(state: state).tabItem { Label(tr("配置", "Profiles"), systemImage: "slider.horizontal.3") }.tag(0)
             GeneralTab(state: state, rebind: rebind).tabItem { Label(tr("通用", "General"), systemImage: "gearshape") }.tag(1)
             TerminalTab(state: state).tabItem { Label(tr("终端集成", "Terminal"), systemImage: "terminal") }.tag(2)
-            PermissionTab().tabItem { Label(tr("权限与隐私", "Permissions & Privacy"), systemImage: "lock.shield") }.tag(3)
+            UsageTab().tabItem { Label(tr("使用统计", "Usage"), systemImage: "chart.bar") }.tag(3)
+            PermissionTab().tabItem { Label(tr("权限与隐私", "Permissions & Privacy"), systemImage: "lock.shield") }.tag(4)
         }
         .id(state.uiLanguage) // 切换界面语言时重建各页（不观察 state 的子视图不会自己刷新）；tab 在外层，不跳页
         .padding()
@@ -409,7 +410,6 @@ struct GeneralTab: View {
                 LabeledContent(tr("失败时", "On failure"), value: tr("不自动重试，原文不动", "No automatic retry; original text untouched"))
                 LabeledContent(tr("进行中再按快捷键", "Shortcut while running"), value: tr("取消本次润色", "Cancels the current polish"))
             }
-            UsageSection()
         }
         .formStyle(.grouped)
         .onDisappear { stop() }
@@ -417,7 +417,7 @@ struct GeneralTab: View {
 }
 
 /// 使用统计：只读本地 usage/ 下的每日汇总；时间范围只是视图状态，不存设置
-struct UsageSection: View {
+struct UsageTab: View {
     enum Range: CaseIterable { case today, d7, d30, d90, year, all, custom }
     @State var range = Range.d7
     @State var start = Date()
@@ -481,7 +481,7 @@ struct UsageSection: View {
         let hints = Dictionary(total.hint.map { (UsageDay.fields($0.key).last ?? "", $0.value) }, uniquingKeysWith: +)
         let shown = hints[HintOutcome.shown.rawValue] ?? 0
 
-        return Section(tr("使用统计", "Usage")) {
+        return Form { Section {
             Picker(tr("时间范围", "Range"), selection: $range) {
                 ForEach(Range.allCases, id: \.self) { Text(label($0)).tag($0) }
             }
@@ -530,7 +530,8 @@ struct UsageSection: View {
             } message: {
                 Text(tr("删除 usage 文件夹里的所有记录，无法恢复。", "Deletes every record in the usage folder. This can't be undone."))
             }
-        }
+        } }
+        .formStyle(.grouped)
         .onAppear(perform: reload)
         .onChange(of: range) { reload() }
         .onChange(of: start) { reload() }
