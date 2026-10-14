@@ -17,6 +17,7 @@ final class TypingAssist {
     private var choosing = false
     private var buffer = PinyinBuffer()
     private var debounce: DispatchWorkItem?
+    private var candidateRead: DispatchWorkItem?
     private let polisher = Polisher()
     private var sentence = "" // 本句已上屏的中文
     private var sentenceDebounce: DispatchWorkItem?
@@ -166,11 +167,13 @@ final class TypingAssist {
             let digit = flags.isEmpty ? c?.wholeNumberValue.flatMap { (1...9).contains($0) ? $0 : nil } : nil
             guard (flags.isEmpty && code == kVK_Space) || digit != nil || punct != nil else { return }
             let pick = digit.map { $0 - 1 } ?? buffer.highlight
-            guard let word = committed(pick) else {
-                Log.write("typing sentence: commit unknown (pick=\(pick))")
-                return
+            if let word = committed(pick) {
+                add = word
+            } else {
+                // 没读到候选（打字太快、候选窗已收起）：先记拼音，整句请求时让模型补成中文
+                Log.write("typing sentence: commit unknown (pick=\(pick)), keep pinyin")
+                add = buffer.text.replacingOccurrences(of: "'", with: "")
             }
-            add = word
         } else if code == kVK_Delete, flags.isEmpty, !sentence.isEmpty {
             sentence.removeLast()
             return sentence.isEmpty ? clearSentence() : sentenceChanged()
@@ -214,7 +217,15 @@ final class TypingAssist {
             guard let self, self.sentence == s else { return } // 期间又上屏了新内容：结果作废
             switch r {
             case .success(let out):
-                if let t = parseSentence(out) { self.model.translation = t } else { self.model.sentenceError = "无法解析模型结果" }
+                if let t = parseSentence(out) {
+                    self.model.translation = t
+                    if hasPinyin(s), let zh = t.zh { // 拼音换成模型补全的中文，退格计数也按中文
+                        self.sentence = zh
+                        self.model.sentence = zh
+                    }
+                } else {
+                    self.model.sentenceError = "无法解析模型结果"
+                }
             case .failure(let e):
                 self.model.sentenceError = e.localizedDescription
             }
@@ -247,6 +258,16 @@ final class TypingAssist {
             return
         }
         pid = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+        // 尽早读一次候选：打字快时空格常在 convert 之前按下，那时再读候选窗已经收起
+        let pinyin = buffer.text
+        let read = DispatchWorkItem { [weak self] in MainActor.assumeIsolated {
+            guard let self, self.buffer.text == pinyin, self.candidates.pinyin != pinyin else { return }
+            let list = IME.candidates().list
+            if !list.isEmpty { self.candidates = (pinyin, list) }
+        } }
+        candidateRead?.cancel()
+        candidateRead = read
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: read)
         let w = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.convert() } }
         debounce = w
         // 切换候选：等输入法重绘后立即换算；打字：流畅打字按键间隔约 150ms，250ms 仍能合并连续输入

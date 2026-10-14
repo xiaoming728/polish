@@ -373,9 +373,11 @@ do {
 // MARK: 整句翻译：解析、着色区间、请求参数
 
 do {
-    let t = parseSentence(#"```json\n{"en":"Hello, World.","pairs":[["你好","Hello"],["世界","World"]]}\n```"#)
-    check(t == SentenceTranslation(en: "Hello, World.", pairs: [SentencePair(zh: "你好", en: "Hello"), SentencePair(zh: "世界", en: "World")]), "解析整句译文与词对应")
+    let t = parseSentence(#"```json\n{"zh":"你好，世界。","en":"Hello, World.","pairs":[["你好","Hello"],["世界","World"]]}\n```"#)
+    check(t == SentenceTranslation(zh: "你好，世界。", en: "Hello, World.", pairs: [SentencePair(zh: "你好", en: "Hello"), SentencePair(zh: "世界", en: "World")]), "解析整句译文与词对应")
     check(parseSentence(#"{"en":"Hi","pairs":"bad"}"#) == SentenceTranslation(en: "Hi", pairs: []), "pairs 格式不对：只保留译文")
+    check(parseSentence(#"{"en":"Hi","zh":""}"#)?.zh == nil, "zh 为空当作没给")
+    check(hasPinyin("你好shijie。") && !hasPinyin("你好，世界。") && !hasPinyin("１２"), "识别句中残留的拼音")
     check(parseSentence(#"{"pairs":[]}"#) == nil && parseSentence("no") == nil, "缺译文返回 nil")
 
     func spans(_ text: String, _ parts: [String], _ whole: Bool) -> [String] {
