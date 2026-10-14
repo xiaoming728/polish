@@ -17,6 +17,15 @@ struct KeyHint: View {
     }
 }
 
+/// 垫在面板背后：按住空白处（标题行、边距）拖动窗口。SwiftUI 内容不响应 isMovableByWindowBackground
+struct WindowDragArea: NSViewRepresentable {
+    final class DragView: NSView {
+        override func mouseDown(with e: NSEvent) { window?.performDrag(with: e) }
+    }
+    func makeNSView(context: Context) -> NSView { DragView() }
+    func updateNSView(_ v: NSView, context: Context) {}
+}
+
 struct PanelView: View {
     @ObservedObject var state: AppState
     @State var showSource = false
@@ -40,6 +49,7 @@ struct PanelView: View {
                 Spacer()
                 status
             }
+            .allowsHitTesting(false) // 标题行没有按钮：整行交给背后的拖动区
             if let (msg, color) = problem {
                 Text(msg).font(.system(size: 12)).padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -72,6 +82,7 @@ struct PanelView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(WindowDragArea())
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.12)))
     }
@@ -399,7 +410,7 @@ struct SnippetBox: View {
         do {
             try ZshRc.write(new)
             rc = ZshRc.read()
-            message = done + "。新开的终端窗口生效（已打开的窗口执行 source ~/.zshrc）；改动前的内容备份在 ~/.zshrc.polish-backup。"
+            message = done + "。新开的终端窗口生效（已打开的窗口执行 source ~/.zshrc）；已在运行的 claude / codex 要退出后重新启动。改动前的内容备份在 ~/.zshrc.polish-backup。"
         } catch {
             message = "写入 ~/.zshrc 失败：\(error.localizedDescription)"
         }
@@ -444,6 +455,8 @@ struct TerminalTab: View {
                 SnippetBox(title: "zsh 输入行", id: "zsh", code: zsh, rc: $rc, message: $message)
                 SnippetBox(title: "Claude Code", id: "claude", code: alias("claude"), rc: $rc, message: $message)
                 SnippetBox(title: "Codex", id: "codex", code: alias("codex"), rc: $rc, message: $message)
+                Label("Claude Code / Codex 只在启动时读取编辑器设置：安装前就在运行的会话，按快捷键会打开 vi。退出后在新终端窗口重新启动即可。", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
                 Label("bash 不支持：Ctrl+X Ctrl+E 编辑后会直接执行命令。bash 中改为润色终端选区后复制。", systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary)
                 Label("ssh 到远程或未配置的 zsh 中，Ctrl+G 会清空当前行；执行 print -z -- $ZLE_LINE_ABORTED 可恢复。", systemImage: "exclamationmark.triangle")
