@@ -102,7 +102,7 @@ func round(_ pinyin: String, english: Bool) {
     let result = waitLog(after: mark, contains: "typing result", timeout: 15)
     check(result?.contains("ok=true") == true, "「\(pinyin)」：光标上方出现中英结果", result ?? "（15 秒内没有结果）")
     if let anchor = logLines().dropFirst(mark).last(where: { $0.contains("typing anchor") }) {
-        check(anchor.contains("caret"), "「\(pinyin)」：提示框定位在光标", anchor)
+        check(anchor.contains("anchor=caret") || anchor.contains("anchor=ime"), "「\(pinyin)」：提示框定位在输入行上方", anchor)
     }
     guard result?.contains("ok=true") == true else { return }
     if let dir = ProcessInfo.processInfo.environment["SHOT_DIR"] { // 可选：提示框出现时截屏留证

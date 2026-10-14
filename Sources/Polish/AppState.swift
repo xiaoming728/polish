@@ -26,7 +26,7 @@ enum TerminalKey: String, CaseIterable {
         switch self {
         case .ctrlG: return "zsh 输入行、Claude Code、Codex"
         case .ctrlXCtrlE: return "zsh 输入行、Claude Code、Aider 等 readline / prompt_toolkit 类"
-        case .ctrlX: return "Gemini CLI、Qwen Code 等 Gemini 系（zsh 输入行不可用）"
+        case .ctrlX: return "Qoder / qodercn、Gemini CLI、Qwen Code（zsh 输入行不可用）"
         case .ctrlXE: return "OpenCode（zsh 输入行不可用）"
         }
     }

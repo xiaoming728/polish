@@ -1,5 +1,7 @@
 // 断言自检：swift run core-checks。预期值来自协议文档的示例与 design.md 的约定。
 import Foundation
+import NaturalLanguage
+import CoreGraphics
 import PolishCore
 
 // core-checks serve：用真实 EditServer 充当可脚本化的「假 app」，供 scripts/terminal-e2e.py 驱动。
@@ -341,6 +343,33 @@ do {
     for (def, want) in cases {
         check(dictionaryGloss(def) == want, "词典释义 → \(want ?? "nil")（实际 \(dictionaryGloss(def) ?? "nil")）")
     }
+}
+
+// MARK: 提示面板避开输入行，靠边时留在屏幕内
+
+do {
+    let screen = CGRect(x: 0, y: 0, width: 800, height: 600)
+    let size = CGSize(width: 420, height: 90)
+    for anchor in [CGRect(x: 200, y: 300, width: 1, height: 22),
+                   CGRect(x: 790, y: 570, width: 1, height: 22),
+                   CGRect(x: 0, y: 2, width: 1, height: 22)] {
+        let frame = typingHintFrame(size: size, anchor: anchor, visibleFrame: screen)
+        check(frame != nil && screen.contains(frame!) && !frame!.intersects(anchor), "提示避开输入行且不超出屏幕：\(anchor)")
+    }
+    check(typingHintFrame(size: size, anchor: screen, visibleFrame: screen) == nil, "上下都放不下时不覆盖输入区域")
+}
+
+// MARK: 英文词性标注：只标注单词，保留原始字符串范围
+
+do {
+    let text = "The curious cat eats fresh apples quickly."
+    let tags = englishWordTags(text)
+    let words = tags.map { String(text[$0.range]) }
+    check(words == ["The", "curious", "cat", "eats", "fresh", "apples", "quickly"], "词性标注保留单词范围，不包含标点和空白")
+    check(tags.first { String(text[$0.range]) == "cat" }?.tag == .noun, "cat 标注为名词")
+    check(tags.first { String(text[$0.range]) == "eats" }?.tag == .verb, "eats 标注为动词")
+    check(tags.first { String(text[$0.range]) == "quickly" }?.tag == .adverb, "quickly 标注为副词")
+    check(englishWordTags("").isEmpty && englishWordTags("... 🙂").isEmpty, "空串、标点和表情不产生词性标签")
 }
 
 // MARK: 终端一键安装 / 卸载：~/.zshrc 中的标记块

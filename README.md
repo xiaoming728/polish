@@ -21,6 +21,8 @@ open /Applications/Polish.app
 
 ## 使用
 
+**Qoder / qodercn**：在「设置 → 终端集成」选择 **Ctrl+X**；默认 Ctrl+G 不会打开它的外部编辑器。安装「终端 Agent 与其他程序」后，在新终端里重新启动 qodercn，使它继承 `VISUAL/EDITOR`。这个按键设置对所有终端生效，回到 zsh / Claude Code / Codex 时改选 Ctrl+G。
+
 | 操作 | 效果 |
 |---|---|
 | 选中文字，按 ⌥P | 在选区旁弹出预览，流式显示润色结果 |
@@ -42,6 +44,7 @@ swift build
 swift run core-checks              # 纯逻辑断言自检（CLT 下没有 XCTest，用它代替）
 python3 -I scripts/stream-e2e.py   # 流式请求：本地模拟服务端，OpenAI 兼容 / Anthropic / 各类错误
 python3 -I scripts/terminal-e2e.py # 终端流程：zsh pty + 真实 polish-edit，14 个用例
+python3 -I scripts/qodercn-e2e.py  # 本机已登录的 qodercn：握手、写回不发送、取消保留原文
 ```
 
 代码结构：

@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import PolishCore
+import NaturalLanguage
 import SwiftUI
 
 /// 输入时中英提示：中文输入法下敲拼音时，在光标上方显示英文（⌥1，默认）和中文（⌥2）两个候选。
@@ -28,6 +29,7 @@ final class TypingAssist {
     private var sentenceResult: (text: String, t: SentenceTranslation)? // 本句（不含正在敲的词）的翻译
     private var candidates: (pinyin: String, list: [String]) = ("", []) // convert 读到的候选，上屏时取用
     private var pid: pid_t = 0
+    private var inputBounds: CGRect? // 本句输入过的行：长句换行后仍避开前面的文字
     private var imeFrame: CGRect? // 输入法候选窗：读不到光标的应用（微信等）用它定位
     private let panel: NSPanel = {
         let p = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -40,6 +42,7 @@ final class TypingAssist {
         return p
     }()
     private let model = HintModel()
+    private var dismissal = 0
 
     init(state: AppState) {
         self.state = state
@@ -110,6 +113,7 @@ final class TypingAssist {
         sentenceDebounce?.cancel()
         sentencePolisher.cancel()
         sentenceResult = nil
+        inputBounds = nil
         model.pairs = []
     }
 
@@ -117,7 +121,7 @@ final class TypingAssist {
     private func hide() {
         HotKey.unregisterExtra(2)
         HotKey.unregisterExtra(3)
-        guard !sentence.isEmpty else { return panel.orderOut(nil) }
+        guard !sentence.isEmpty else { return fadeOut() }
         let r = sentenceResult?.text == sentence ? sentenceResult?.t : nil
         model.pinyin = sentence
         model.en = r?.en
@@ -126,6 +130,24 @@ final class TypingAssist {
         model.error = nil
         show()
         registerKeys()
+    }
+
+    private func fadeOut() {
+        HotKey.unregisterExtra(2)
+        HotKey.unregisterExtra(3)
+        dismissal += 1
+        let current = dismissal
+        if panel.isVisible {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.25
+                panel.animator().alphaValue = 0
+            } completionHandler: { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.dismissal == current else { return }
+                    self.panel.orderOut(nil)
+                }
+            }
+        }
     }
 
     // MARK: 事件
@@ -199,7 +221,8 @@ final class TypingAssist {
         var add = ""
         if !buffer.text.isEmpty {
             let digit = flags.isEmpty ? c?.wholeNumberValue.flatMap { (1...9).contains($0) ? $0 : nil } : nil
-            guard (flags.isEmpty && code == kVK_Space) || digit != nil || punct != nil else { return }
+            let literal = c.flatMap { $0 != "'" && ($0.isNumber || $0.isPunctuation || $0.isSymbol) ? String($0) : nil }
+            guard (flags.isEmpty && code == kVK_Space) || digit != nil || literal != nil else { return }
             let pick = digit.map { $0 - 1 } ?? buffer.highlight
             if let word = committed(pick) {
                 add = word
@@ -211,11 +234,17 @@ final class TypingAssist {
                 Log.write("typing sentence: commit unknown (pick=\(pick)), keep pinyin")
                 add = buffer.text.replacingOccurrences(of: "'", with: "")
             }
+            if digit == nil { add += punct ?? literal ?? "" }
         } else if code == kVK_Delete, flags.isEmpty, !sentence.isEmpty {
             sentence.removeLast()
             return sentence.isEmpty ? clearSentence() : sentenceChanged() // feed 随后 hide 刷新显示
+        } else if let c {
+            // 终端没有已知中文输入时不记录直输按键，避免把密码交给模型。
+            guard !inTerminal() || !sentence.isEmpty else { return }
+            if c.isNumber || c.isPunctuation || c.isSymbol || (c == " " && !sentence.isEmpty) {
+                add = punct ?? String(c)
+            }
         }
-        add += punct ?? ""
         guard !add.isEmpty else { return }
         sentence += add
         sentenceChanged()
@@ -405,34 +434,44 @@ final class TypingAssist {
 
     /// 只有对应结果已经出来时才占用 ⌥1 / ⌥2；其余时间不影响它们原本的输入
     private func registerKeys() {
-        guard !hasPinyin(sentence) else { return } // 本句里还有没补全的拼音：不知道该退几格
+        guard panel.isVisible, panel.alphaValue > 0, !hasPinyin(sentence) else { return } // 本句里还有没补全的拼音：不知道该退几格
         if model.en != nil { HotKey.registerExtra(2, code: kVK_ANSI_1, mods: optionKey) { [weak self] in self?.choose(english: true) } }
         if model.zh != nil { HotKey.registerExtra(3, code: kVK_ANSI_2, mods: optionKey) { [weak self] in self?.choose(english: false) } }
     }
 
     private func show() {
+        dismissal += 1 // 新结果出现时，旧淡出的完成回调不能隐藏它
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            panel.animator().alphaValue = 1
+        }
         let host = panel.contentView as! NSHostingView<TypingHintView>
+        // @Published 的布局更新是异步的，先同步渲染，否则成功结果会按等待态高度定位。
+        host.rootView = TypingHintView(model: model)
+        host.layoutSubtreeIfNeeded()
         let size = host.fittingSize
+        guard let origin = origin(for: size) else { fadeOut(); return }
         panel.setContentSize(size)
-        panel.setFrameOrigin(origin(for: size))
+        panel.setFrameOrigin(origin)
         panel.orderFrontRegardless()
     }
 
-    /// 光标上方（输入法候选窗通常在下方）；取不到光标位置时按候选窗推算，再不行放在鼠标上方
-    private func origin(for size: NSSize) -> NSPoint {
+    /// 候选窗紧贴正在输入的行，比 AX 的「输入框第一行」兜底更可靠；无法定位时不遮挡输入。
+    private func origin(for size: NSSize) -> NSPoint? {
         let el = Selection.focusedElement()
         let caret = el.flatMap(Selection.caretRect)
+        // 上屏后的数字、标点也会让输入换行，不能一直沿用上一个拼音词的候选窗位置。
+        let currentIME = IME.candidates().frame
+        if let frame = currentIME { imeFrame = frame }
         // 候选窗贴在光标那一行下方：往上补一行高，提示就落在光标行上方而不盖住它
-        let ime = imeFrame.map { CGRect(x: $0.minX, y: $0.minY, width: 1, height: $0.height + 22) }
-        Log.write("typing anchor=\((inTerminal() && ime != nil) || caret == nil ? (ime != nil ? "ime" : "mouse") : "caret") role=\(el.flatMap(Selection.role) ?? "nil") caret=\(caret.map { "\($0)" } ?? "-") ime=\(imeFrame.map { "\($0)" } ?? "-")")
-        // 终端报的光标位置不可信（实测 Ghostty 固定报窗口左上角），优先跟输入法候选窗走
-        let anchor = (inTerminal() ? ime ?? caret : caret ?? ime) ?? CGRect(origin: NSEvent.mouseLocation, size: .zero)
+        let ime = imeFrame.map { CGRect(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height + 22) }
+        Log.write("typing anchor=\(ime != nil ? "ime" : caret != nil ? "caret" : "unavailable") role=\(el.flatMap(Selection.role) ?? "nil") caret=\(caret.map { "\($0)" } ?? "-") ime=\(imeFrame.map { "\($0)" } ?? "-")")
+        let currentCaret = inTerminal() ? nil : el.flatMap(Selection.bounds)
+        let anchor = currentIME != nil ? ime : currentCaret ?? ime ?? caret
+        guard let anchor else { return nil }
         let screen = NSScreen.screens.first { $0.frame.contains(anchor.origin) } ?? NSScreen.main!
-        let vf = screen.visibleFrame
-        var o = NSPoint(x: anchor.minX, y: anchor.maxY + 6)
-        if o.y + size.height > vf.maxY { o.y = anchor.minY - size.height - 6 }
-        o.x = min(max(o.x, vf.minX + 4), vf.maxX - size.width - 4)
-        return o
+        inputBounds = inputBounds.map { $0.union(anchor) } ?? anchor
+        return typingHintFrame(size: size, anchor: inputBounds!, visibleFrame: screen.visibleFrame)?.origin
     }
 
     // MARK: 选择
@@ -481,56 +520,95 @@ struct TypingHintView: View {
             } else {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text(model.pinyin).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
+                    Text(model.pinyin).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary).lineLimit(3)
                 }
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
-        .frame(maxWidth: 420, alignment: .leading)
-        .fixedSize()
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.12)))
-    }
-
-    static let palette: [Color] = [.blue, .orange, .green, .pink, .purple, .teal, .brown, .red]
-
-    /// 面板整体 fixedSize（按内容定大小），文本拿不到宽度上限不会换行：先量出单行宽度，超过上限就固定宽度换行
-    func line(_ text: AttributedString, plain: String, weight: Font.Weight) -> some View {
-        let w = (plain as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: weight == .semibold ? .semibold : .regular)]).width
-        return Text(text).font(.system(size: 13, weight: weight))
-            .frame(width: min(ceil(w) + 2, 370), alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    func colored(_ text: String, _ parts: [String], wholeWords: Bool) -> AttributedString {
-        var out = AttributedString()
-        var at = text.startIndex
-        for (r, i) in colorRanges(text, parts, wholeWords: wholeWords) {
-            out += AttributedString(text[at..<r.lowerBound])
-            var seg = AttributedString(text[r])
-            seg.foregroundColor = Self.palette[i % Self.palette.count]
-            out += seg
-            at = r.upperBound
-        }
-        return out + AttributedString(text[at...])
+        .frame(width: 420, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .modifier(PanelBackground(cornerRadius: 16))
     }
 
     func pending(_ key: String) -> some View {
-        HStack(spacing: 6) {
+        HStack(alignment: .top, spacing: 6) {
             Text(key).font(.system(size: 11, weight: .medium, design: .rounded))
                 .padding(.horizontal, 5).padding(.vertical, 1)
                 .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+                .fixedSize()
             ProgressView().controlSize(.mini)
         }
     }
 
     func row(_ key: String, _ text: String, primary: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
+        HStack(alignment: .top, spacing: 6) {
             Text(key).font(.system(size: 11, weight: .medium, design: .rounded))
                 .padding(.horizontal, 5).padding(.vertical, 1)
                 .background(primary ? Color.accentColor.opacity(0.25) : Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
-            // 英文、中文里对应的词同色
-            line(colored(text, model.pairs.map { primary ? $0.en : $0.zh }, wholeWords: primary), plain: text, weight: primary ? .semibold : .regular)
+                .fixedSize()
+            VStack(alignment: .leading, spacing: 3) {
+                Text(model.pairs.isEmpty ? (primary ? annotated(text) : AttributedString(text)) : colored(text, primary: primary))
+                    .font(.system(size: 13, weight: primary ? .semibold : .regular))
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                if primary {
+                    Text(legend(text)).font(.system(size: 10)).lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
+    }
+
+    static let palette: [Color] = [.blue, .orange, .green, .pink, .purple, .teal, .brown, .red]
+
+    private func colored(_ text: String, primary: Bool) -> AttributedString {
+        var result = primary ? annotated(text) : AttributedString(text)
+        for word in colorRanges(text, model.pairs.map { primary ? $0.en : $0.zh }, wholeWords: primary) {
+            if let range = Range(word.range, in: result) {
+                result[range].foregroundColor = Self.palette[word.index % Self.palette.count]
+            }
+        }
+        return result
+    }
+
+    private func annotation(_ tag: NLTag) -> (String, Color)? {
+        switch tag {
+        case .noun: return ("名词", .blue)
+        case .verb: return ("动词", .orange)
+        case .adjective: return ("形容词", .purple)
+        case .adverb: return ("副词", .pink)
+        case .pronoun: return ("代词", .teal)
+        case .preposition: return ("介词", .green)
+        case .conjunction: return ("连词", .indigo)
+        case .determiner: return ("限定词", .secondary)
+        case .number: return ("数词", .brown)
+        case .interjection: return ("感叹词", .red)
+        case .particle: return ("助词", .mint)
+        default: return nil
+        }
+    }
+
+    private func annotated(_ text: String) -> AttributedString {
+        var result = AttributedString(text)
+        for word in englishWordTags(text) {
+            if let (_, color) = annotation(word.tag), let range = Range(word.range, in: result) {
+                result[range].foregroundColor = color
+            }
+        }
+        return result
+    }
+
+    private func legend(_ text: String) -> AttributedString {
+        var result = AttributedString()
+        let pairs = colorRanges(text, model.pairs.map(\.en), wholeWords: true)
+        // 整句逐词分析：对应关系只决定颜色，不决定英文词性。
+        for word in englishWordTags(text) {
+            guard let (label, color) = annotation(word.tag) else { continue }
+            var item = AttributedString((result.characters.isEmpty ? "" : "  ·  ") + text[word.range] + "（" + label + "）")
+            let pair = pairs.first { $0.range.overlaps(word.range) }
+            item.foregroundColor = pair.map { Self.palette[$0.index % Self.palette.count] } ?? color
+            result += item
+        }
+        return result
     }
 }

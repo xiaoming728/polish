@@ -248,7 +248,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 state.target = "\(c.appName) · 选区（仅复制）"
                 begin(.copyOnly)
             } else {
-                showToast("没有连上 polish-edit：请在 设置 → 终端集成 中安装 shell 片段。若 zsh 草稿被清空，执行 print -z -- $ZLE_LINE_ABORTED 恢复",
+                showToast("没有连上 polish-edit：请在 设置 → 终端集成 中安装 shell 片段，并选择当前 CLI 的编辑器按键（qodercn 用 Ctrl+X）。安装后需重启 CLI。若 zsh 草稿被清空，执行 print -z -- $ZLE_LINE_ABORTED 恢复",
                           icon: "terminal", seconds: 6)
             }
         }

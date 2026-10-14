@@ -92,8 +92,7 @@ struct PanelView: View {
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WindowDragArea())
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.12)))
+        .modifier(PanelBackground(cornerRadius: 20))
     }
 
     @ViewBuilder var status: some View {

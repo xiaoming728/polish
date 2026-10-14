@@ -1,4 +1,6 @@
 import Foundation
+import NaturalLanguage
+import CoreGraphics
 
 /// 输入时中英提示：键盘事件归类后喂给拼音缓冲
 public enum TypingKey: Equatable, Sendable {
@@ -117,6 +119,33 @@ public func dictionaryGloss(_ definition: String) -> String? {
     // 剩下的必须是纯英文（拼音、汉字、残留符号都说明没解析对）
     guard !gloss.isEmpty, gloss.count <= 60, gloss.unicodeScalars.allSatisfy({ $0.isASCII }) else { return nil }
     return gloss
+}
+
+/// 本地识别英文词性，范围直接指向原文；词典与模型译文共用，不增加网络请求。
+public func englishWordTags(_ text: String) -> [(range: Range<String.Index>, tag: NLTag)] {
+    guard !text.isEmpty else { return [] }
+    let tagger = NLTagger(tagSchemes: [.lexicalClass])
+    tagger.string = text
+    tagger.setLanguage(.english, range: text.startIndex..<text.endIndex)
+    var words: [(range: Range<String.Index>, tag: NLTag)] = []
+    tagger.enumerateTags(in: text.startIndex..<text.endIndex, unit: .word, scheme: .lexicalClass,
+                         options: [.omitWhitespace, .omitPunctuation]) { tag, range in
+        if let tag, tag != .otherWord { words.append((range, tag)) }
+        return true
+    }
+    return words
+}
+
+/// 优先放在输入行／候选窗上方；放不下则放下方，两侧都不足时不覆盖输入区域。
+public func typingHintFrame(size: CGSize, anchor: CGRect, visibleFrame: CGRect) -> CGRect? {
+    let screen = visibleFrame.insetBy(dx: 4, dy: 4)
+    guard size.width <= screen.width, size.height <= screen.height else { return nil }
+    let x = min(max(anchor.minX, screen.minX), screen.maxX - size.width)
+    for y in [anchor.maxY + 6, anchor.minY - size.height - 6] {
+        let frame = CGRect(origin: CGPoint(x: x, y: y), size: size)
+        if screen.contains(frame) { return frame }
+    }
+    return nil
 }
 
 // MARK: 整句翻译：选词上屏的内容累积成一句，整句翻译并按词对应着色
