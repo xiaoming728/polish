@@ -291,7 +291,16 @@ final class TypingAssist {
             if direct { buffer.feed(classify(code, flags, event)) } // 切回中文模式时拼音不丢
             return trackReverse(code, flags, event)
         }
-        if !reverseText.isEmpty { reset() } // 从键盘布局切回了输入法
+        if !reverseText.isEmpty { // 从键盘布局切回了输入法，或首选英文候选的结果已过时：只清反向状态，正在敲的拼音保留（退格计数靠它）
+            reverseText = ""
+            model.reverse = false
+            polisher.cancel()
+        }
+        // 中文输入法下 Shift+字母：输入法直接上屏大写字母，本段按英文开始（如 Hello）；若输入法其实开始组合，requestReverse 会切回拼音
+        if sentence.isEmpty, buffer.text.isEmpty, flags == .maskShift, typedChar(event)?.isLetter == true, chineseInputActive(), reverseAllowed() {
+            enterDirect()
+            return trackReverse(code, flags, event)
+        }
         // 输入法英文模式：上屏键前没有候选窗。本句为空时整段按外文反向提示；句中的英文交给 trackSentence 原样记入
         if sentence.isEmpty, !buffer.text.isEmpty, classify(code, flags, event) == .other, directCommit(), reverseAllowed() {
             enterDirect()
@@ -582,6 +591,7 @@ final class TypingAssist {
         model.error = key.isEmpty && !["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "") ? "未配置 API Key（⌥P 菜单 → 设置）" : nil
         show()
         guard model.error == nil else { return }
+        Log.write("typing reverse request len=\(text.count) direct=\(direct)")
         var q = sentenceProfile(p, state.native) // 一段文字比单词长：沿用整句的限长
         q.instruction = reverseInstruction(from: state.targetLanguage, to: state.native)
         let t0 = Date()
@@ -628,6 +638,11 @@ final class TypingAssist {
         if candidate == nil && (buffer.highlight > 0 || inTerminal()) {
             hide()
             return
+        }
+        // 输入法把英文单词排在当前高亮（敲 hello 时首选是 hello）：用户在敲英文，译回默认语言；⌥1 按敲过的键数退格替换
+        if let c = candidate, sentence.isEmpty, c.contains(where: \.isLetter), c.unicodeScalars.allSatisfy(\.isASCII), reverseAllowed() {
+            reverseText = pinyin
+            return requestReverse()
         }
         HotKey.unregisterExtra(2)
         HotKey.unregisterExtra(3)
