@@ -767,24 +767,33 @@ final class TypingAssist {
         choosing = true
         Task {
             defer { choosing = false }
-            let el = Selection.focusedElement()
-            let before = el.flatMap(Selection.textBeforeCaret)
+            // 终端（AX value 是整屏回滚）和不暴露焦点的应用（微信 4.x）只能信本句记录；文本控件却读不到内容是偶发失败，重试一次仍不行就不删
+            let el = inTerminal() ? nil : Selection.focusedElement()
+            var before = el.flatMap(Selection.textBeforeCaret)
+            if before == nil, let el, Selection.role(el).map(Selection.editableRoles.contains) == true {
+                await sleepMs(30)
+                before = Selection.textBeforeCaret(el)
+                guard before != nil else { return copyOnly(text) }
+            }
             // 读得到输入框就先核对；对不上（漏记、光标移走、输入法把拼音换成了别的字）一个字都不删
             guard let count = replaceDeletes(before: before, committed: committed, pinyinKeys: pinyinKeys) else { return copyOnly(text) }
             if pinyinKeys > 0 {
                 // 候选窗还在才能确定 Esc 会被输入法吃掉，而不是落到应用里（关掉对话框等）
-                guard IME.candidates().frame != nil else { return copyOnly(text) }
+                guard let ime = IME.current(), IME.candidates(pid: ime.pid, deadline: Date().addingTimeInterval(0.1)).window != nil else { return copyOnly(text) }
                 Keys.post(kVK_Escape, [])
                 await sleepMs(30)
-                if before != nil { // Esc 后光标前必须恰好以要删的字结尾，防止输入法把 Esc 当成上屏
+                if let el, before != nil { // Esc 后光标前必须恰好以要删的字结尾，防止输入法把 Esc 当成上屏
+                    let end = Date().addingTimeInterval(0.2)
                     var ok = false
-                    for _ in 0..<8 where !ok {
-                        ok = el.flatMap(Selection.textBeforeCaret).flatMap { replaceDeletes(before: $0, committed: committed, pinyinKeys: 0) } == count
+                    while !ok, Date() < end {
+                        ok = Selection.textBeforeCaret(el).flatMap { replaceDeletes(before: $0, committed: committed, pinyinKeys: 0) } == count
                         if !ok { await sleepMs(25) }
                     }
                     guard ok else { return copyOnly(text) }
                 }
             }
+            // 期间切走了应用：退格会落到别处
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return copyOnly(text) }
             for _ in 0..<count {
                 Keys.post(kVK_Delete, [])
                 await sleepMs(8)
