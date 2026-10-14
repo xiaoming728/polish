@@ -90,6 +90,7 @@ final class AppState: ObservableObject {
     @Published var source = ""
     @Published var output = ""
     @Published var phase = Phase.done
+    @Published var panelShown = false // ⌥P 面板可见：驱动出现动画和光边；隐藏前先置 false
     @Published var target = ""
     @Published var terminal = false
     @Published var copyOnly = false

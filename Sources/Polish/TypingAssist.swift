@@ -120,10 +120,14 @@ final class TypingAssist {
     }()
     private let model = HintModel()
     private var dismissal = 0
+    private lazy var probe = NSHostingController(rootView: TypingHintView(model: model)) // 按最大宽度测量换行后的尺寸
+    private var lastWaiting: Bool? // 上次显示是不是「翻译中」：只在它变化时过渡窗口尺寸
 
     init(state: AppState) {
         self.state = state
-        panel.contentView = NSHostingView(rootView: TypingHintView(model: model))
+        let host = NSHostingView(rootView: TypingHintView(model: model))
+        host.sizingOptions = [] // 窗口尺寸只由 show() 按测量结果设置，不让 SwiftUI 内容自行改窗口
+        panel.contentView = host
         DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshIME() }
         }
@@ -246,7 +250,7 @@ final class TypingAssist {
         model.zh = r.map { sentenceNeedsConversion ? $0.zh ?? sentence : sentence }
         model.pairs = r?.pairs ?? []
         model.error = nil
-        model.notice = sentenceIncomplete ? "输入未完整读取，以下仅为前文；按 ⌥P 润色整段" : nil
+        model.notice = sentenceIncomplete ? tr("输入未完整读取，以下仅为前文；按 ⌥P 润色整段", "Input not fully read; showing the earlier part only. Press ⌥P to polish it all") : nil
         show()
         registerKeys()
     }
@@ -256,13 +260,15 @@ final class TypingAssist {
         HotKey.unregisterExtra(3)
         dismissal += 1
         let current = dismissal
+        if !panel.isVisible { model.shown = false } // 兜底：窗口不可见时 shown 不能留着 true
         if panel.isVisible {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.25
+                context.duration = 0.1
                 panel.animator().alphaValue = 0
             } completionHandler: { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self, self.dismissal == current else { return }
+                    self.model.shown = false // 先停扫光，再隐藏窗口
                     self.panel.orderOut(nil)
                 }
             }
@@ -427,7 +433,7 @@ final class TypingAssist {
         let p = state.current
         let key = KeyStore.apiKey(p)
         if key.isEmpty && !["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "") {
-            model.error = "未配置 API Key（⌥P 菜单 → 设置）"
+            model.error = tr("未配置 API Key（⌥P 菜单 → 设置）", "No API key set (⌥P menu → Settings)")
             return show()
         }
         let t0 = Date()
@@ -436,7 +442,7 @@ final class TypingAssist {
             guard let self, self.sentence == s, (self.sentenceIncomplete && tail.isEmpty) || (self.buffer.text == pinyin && self.buffer.highlight == highlight), self.sentenceNeedsConversion == unresolved else { return }
             switch r {
             case .success(let out):
-                guard let t = parseSentence(out) else { self.model.error = "无法解析模型结果"; break }
+                guard let t = parseSentence(out) else { self.model.error = tr("无法解析模型结果", "Couldn’t parse the model’s result"); break }
                 // 本句里没读到候选、先记下的拼音换成模型补全的中文（退格计数要按中文）
                 if unresolved, let zh = t.zh {
                     if tail.isEmpty {
@@ -589,7 +595,7 @@ final class TypingAssist {
         model.en = nil
         model.zh = text // ⌥2 始终是用户敲的原文，不管是不是默认语言
         model.pairs = []
-        model.error = key.isEmpty && !["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "") ? "未配置 API Key（⌥P 菜单 → 设置）" : nil
+        model.error = key.isEmpty && !["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "") ? tr("未配置 API Key（⌥P 菜单 → 设置）", "No API key set (⌥P menu → Settings)") : nil
         show()
         guard model.error == nil else { return }
         Log.write("typing reverse request len=\(text.count) direct=\(direct)")
@@ -670,7 +676,7 @@ final class TypingAssist {
             Log.write("typing dictionary hit ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
             return
         }
-        model.error = key.isEmpty && !["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "") ? "未配置 API Key（⌥P 菜单 → 设置）" : nil
+        model.error = key.isEmpty && !["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "") ? tr("未配置 API Key（⌥P 菜单 → 设置）", "No API key set (⌥P menu → Settings)") : nil
         show()
         if candidate != nil { registerKeys() }
         guard model.error == nil else { return }
@@ -687,7 +693,7 @@ final class TypingAssist {
                     self.model.zh = c.zh
                     self.hintShown(t0)
                 } else {
-                    self.model.error = "无法解析模型结果"
+                    self.model.error = tr("无法解析模型结果", "Couldn’t parse the model’s result")
                 }
             case .failure(let e):
                 self.model.error = e.localizedDescription
@@ -716,11 +722,24 @@ final class TypingAssist {
         // @Published 的布局更新是异步的，先同步渲染，否则成功结果会按等待态高度定位。
         host.rootView = TypingHintView(model: model)
         host.layoutSubtreeIfNeeded()
-        let size = host.fittingSize
+        // 宽度随内容：按最宽 420 测量换行，内容不足 240 时由 minWidth 撑开
+        probe.rootView = TypingHintView(model: model)
+        probe.view.layoutSubtreeIfNeeded() // 同上：先同步刷新，否则测到的是上一个状态
+        let fit = probe.sizeThatFits(in: NSSize(width: TypingHintView.width.upperBound, height: 10_000))
+        let size = NSSize(width: ceil(min(max(fit.width, TypingHintView.width.lowerBound), TypingHintView.width.upperBound)), height: ceil(fit.height))
         guard let origin = origin(for: size) else { fadeOut(); return }
-        panel.setContentSize(size)
-        panel.setFrameOrigin(origin)
+        let frame = NSRect(origin: origin, size: size)
+        let waiting = model.waiting
+        // 只在「翻译中 ↔ 结果」切换时过渡窗口尺寸；拼音每次变化直接设置，不动画
+        // 不过渡时也走 animator（时长 0），打断还在进行的尺寸过渡
+        let animate = panel.isVisible && model.shown && lastWaiting != waiting && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = animate ? 0.12 : 0
+            panel.animator().setFrame(frame, display: true)
+        }
+        lastWaiting = waiting
         panel.orderFrontRegardless()
+        if !model.shown { model.shown = true } // 从隐藏到可见：播放出现动画
     }
 
     /// 首次显示时按输入位置定位；等待和结果共用锚点，本次输入期间不跟随光标。
@@ -845,10 +864,15 @@ final class HintModel: ObservableObject {
     @Published var pairs: [SentencePair] = [] // 中英对应的词，同色显示
     @Published var language = TypingLanguage.english // ⌥1 译文的语言
     @Published var reverse = false // 反向提示：⌥1 译成默认语言，⌥2 是用户敲的原文
+    var waiting: Bool { error == nil && en == nil && zh == nil } // 「翻译中」：还没有结果也没有错误
+    @Published var shown = false // 窗口可见：驱动出现动画和扫光；隐藏窗口前先置 false，循环动画随之停止
 }
 
 struct TypingHintView: View {
     @ObservedObject var model: HintModel
+    static let width: ClosedRange<CGFloat> = 240...420 // 宽度随内容
+
+    var waiting: Bool { model.waiting }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -857,60 +881,64 @@ struct TypingHintView: View {
             }
             if let e = model.error {
                 Label(e, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
-            } else if model.en != nil || model.zh != nil {
-                if let en = model.en { row("⌥1", en, primary: true) } else { pending("⌥1") }
-                if let zh = model.zh { row("⌥2", zh, primary: false) } else if !model.reverse { pending("⌥2") }
+            } else if !waiting {
+                Group {
+                    if let en = model.en { row("⌥1", en, primary: true) } else { pending("⌥1") }
+                    if let zh = model.zh { row("⌥2", zh, primary: false) } else if !model.reverse { pending("⌥2") }
+                }.transition(.opacity)
             } else {
-                HStack(alignment: .top, spacing: 8) {
-                    ProgressView().controlSize(.small).padding(.top, 2)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("正在翻译").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-                        Text(model.pinyin).font(.system(size: 13)).lineLimit(3)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(tr("正在翻译", "Translating")).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                    Text(model.pinyin).font(.system(size: 13)).lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .modifier(Shimmer(active: model.shown))
+                }.transition(.opacity)
             }
         }
+        .animation(.easeInOut(duration: 0.15), value: waiting) // 只在「翻译中 ↔ 结果」切换时交叉淡化，拼音变化不动画
         .padding(.horizontal, 12).padding(.vertical, 10)
-        .frame(width: 420, alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(minWidth: Self.width.lowerBound, alignment: .leading)
         .modifier(PanelBackground(cornerRadius: 16))
+        .modifier(PopIn(shown: model.shown))
+    }
+
+    func label(_ key: String) -> String {
+        model.notice == nil ? key : (key == "⌥1" ? model.language.uiName : tr("中文", "Chinese"))
     }
 
     func pending(_ key: String) -> some View {
         HStack(alignment: .top, spacing: 6) {
-            Text(model.notice == nil ? key : (key == "⌥1" ? model.language.name : "中文")).font(.system(size: 11, weight: .medium, design: .rounded))
+            Text(label(key)).font(.system(size: 11, weight: .medium, design: .rounded))
                 .padding(.horizontal, 5).padding(.vertical, 1)
                 .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
                 .fixedSize()
-            ProgressView().controlSize(.mini).padding(.top, 2)
-            Text("翻译中…").font(.system(size: 13)).foregroundStyle(.secondary)
+            Text(tr("翻译中…", "Translating…")).font(.system(size: 13)).modifier(Shimmer(active: model.shown))
         }
     }
 
     func row(_ key: String, _ text: String, primary: Bool) -> some View {
         HStack(alignment: .top, spacing: 6) {
-            Text(model.notice == nil ? key : (key == "⌥1" ? model.language.name : "中文")).font(.system(size: 11, weight: .medium, design: .rounded))
+            Text(label(key)).font(.system(size: 11, weight: .medium, design: .rounded))
                 .padding(.horizontal, 5).padding(.vertical, 1)
                 .background(primary ? Color.accentColor.opacity(0.25) : Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
                 .fixedSize()
             VStack(alignment: .leading, spacing: 3) {
-                Text(model.pairs.isEmpty ? (primary ? annotated(text) : AttributedString(text)) : colored(text, primary: primary))
+                Text(model.pairs.isEmpty ? AttributedString(text) : colored(text, primary: primary))
                     .font(.system(size: 13, weight: primary ? .semibold : .regular))
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
                 if primary && model.language == .english {
-                    Text(legend(text)).font(.system(size: 10)).lineLimit(2)
+                    Text(legend(text)).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
     }
 
-    static let palette: [Color] = [.blue, .orange, .green, .pink, .purple, .teal, .brown, .red]
+    static let palette: [Color] = [.blue, .orange, .green, .pink, .purple, .teal]
 
     private func colored(_ text: String, primary: Bool) -> AttributedString {
-        var result = primary ? annotated(text) : AttributedString(text)
+        var result = AttributedString(text)
         for word in colorRanges(text, model.pairs.map { primary ? $0.en : $0.zh }, wholeWords: primary && model.language.spaced) {
             if let range = Range(word.range, in: result) {
                 result[range].foregroundColor = Self.palette[word.index % Self.palette.count]
@@ -919,45 +947,27 @@ struct TypingHintView: View {
         return result
     }
 
-    private func annotation(_ tag: NLTag) -> (String, Color)? {
+    private func annotation(_ tag: NLTag) -> String? {
         switch tag {
-        case .noun: return ("名词", .blue)
-        case .verb: return ("动词", .orange)
-        case .adjective: return ("形容词", .purple)
-        case .adverb: return ("副词", .pink)
-        case .pronoun: return ("代词", .teal)
-        case .preposition: return ("介词", .green)
-        case .conjunction: return ("连词", .indigo)
-        case .determiner: return ("限定词", .secondary)
-        case .number: return ("数词", .brown)
-        case .interjection: return ("感叹词", .red)
-        case .particle: return ("助词", .mint)
+        case .noun: return tr("名词", "noun")
+        case .verb: return tr("动词", "verb")
+        case .adjective: return tr("形容词", "adj.")
+        case .adverb: return tr("副词", "adv.")
+        case .pronoun: return tr("代词", "pron.")
+        case .preposition: return tr("介词", "prep.")
+        case .conjunction: return tr("连词", "conj.")
+        case .determiner: return tr("限定词", "det.")
+        case .number: return tr("数词", "num.")
+        case .interjection: return tr("感叹词", "interj.")
+        case .particle: return tr("助词", "part.")
         default: return nil
         }
     }
 
-    private func annotated(_ text: String) -> AttributedString {
-        var result = AttributedString(text)
-        guard model.language == .english else { return result } // 词性标注只做英文
-        for word in englishWordTags(text) {
-            if let (_, color) = annotation(word.tag), let range = Range(word.range, in: result) {
-                result[range].foregroundColor = color
-            }
-        }
-        return result
-    }
-
-    private func legend(_ text: String) -> AttributedString {
-        var result = AttributedString()
-        let pairs = colorRanges(text, model.pairs.map(\.en), wholeWords: true)
-        // 整句逐词分析：对应关系只决定颜色，不决定英文词性。
-        for word in englishWordTags(text) {
-            guard let (label, color) = annotation(word.tag) else { continue }
-            var item = AttributedString((result.characters.isEmpty ? "" : "  ·  ") + text[word.range] + "（" + label + "）")
-            let pair = pairs.first { $0.range.overlaps(word.range) }
-            item.foregroundColor = pair.map { Self.palette[$0.index % Self.palette.count] } ?? color
-            result += item
-        }
-        return result
+    /// 词性标注：灰色小字，不再用颜色（颜色只留给中英对应词）
+    private func legend(_ text: String) -> String {
+        englishWordTags(text).compactMap { word in
+            annotation(word.tag).map { text[word.range] + tr("（\($0)）", " (\($0))") }
+        }.joined(separator: "  ·  ")
     }
 }

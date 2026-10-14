@@ -70,6 +70,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
     var guide: NSWindow?
     var toastTimer: Timer?
     var toastConfirm = false
+    var toastFade = 0 // 胶囊淡出的代次：淡出途中又显示新胶囊时，旧的完成回调不能隐藏它
     var origin: Origin?
     var terminalPID: pid_t = 0
     /// 已确认、等第二次握手写回的终端结果；source 是第一次握手读到的草稿，用来确认输入框没被改过
@@ -107,7 +108,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
         HotKey.handler = { [weak self] in self?.trigger() }
         HotKey.install()
         if !HotKey.register(state.hotKey) {
-            showToast("快捷键 \(state.hotKey.name) 被其他应用占用，请在设置中更换", icon: "exclamationmark.triangle")
+            showToast(tr("快捷键 \(state.hotKey.name) 被其他应用占用，请在设置中更换", "Shortcut \(state.hotKey.name) is used by another app. Change it in Settings"), icon: "exclamationmark.triangle")
         }
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             self?.handleKey(e) == true ? nil : e
@@ -115,7 +116,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
 
         server.onEdit = { [weak self] draft in self?.terminalDraft(draft) }
         server.onTimeout = { [weak self] in self?.terminalTimeout() }
-        do { try server.start() } catch { showToast("终端集成不可用：\(error.localizedDescription)", icon: "exclamationmark.triangle") }
+        do { try server.start() } catch { showToast(tr("终端集成不可用：\(error.localizedDescription)", "Terminal integration unavailable: \(error.localizedDescription)"), icon: "exclamationmark.triangle") }
 
         Log.write("launch trusted=\(Permissions.trusted) listenAccess=\(CGPreflightListenEventAccess())")
         // 新用户（未授权或没填 Key）首次启动弹导引，不再同时弹系统授权框；已配置好的老用户升级时直接记为已弹过
@@ -197,7 +198,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
             let ok = typing.start()
             Log.write("typing-assist start ok=\(ok)")
             guard !ok else { return }
-            showToast("输入时中英提示需要「输入监控」权限：系统设置 → 隐私与安全性 → 输入监控 → 打开 Polish", icon: "keyboard", seconds: 6)
+            showToast(tr("输入时中英提示需要「输入监控」权限：系统设置 → 隐私与安全性 → 输入监控 → 打开 Polish", "Typing hints need Input Monitoring: System Settings → Privacy & Security → Input Monitoring → turn on Polish"), icon: "keyboard", seconds: 6)
             // 授权后自动生效，不用重启
             typingRetry = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] t in
                 MainActor.assumeIsolated {
@@ -228,12 +229,12 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
         dismiss()
         guard Permissions.trusted else {
             Permissions.prompt()
-            showToast("需要辅助功能权限：系统设置 → 隐私与安全性 → 辅助功能", icon: "lock.shield")
+            showToast(tr("需要辅助功能权限：系统设置 → 隐私与安全性 → 辅助功能", "Accessibility permission required: System Settings → Privacy & Security → Accessibility"), icon: "lock.shield")
             return
         }
         guard let front = NSWorkspace.shared.frontmostApplication else { return }
         if terminalBundleIDs.contains(front.bundleIdentifier ?? "") {
-            state.target = "\(front.localizedName ?? "终端") · 输入框"
+            state.target = tr("\(front.localizedName ?? "终端") · 输入框", "\(front.localizedName ?? "Terminal") · Input")
             terminalPID = front.processIdentifier
             record(writeBack?.run, .cancelled) // 上一次的写回还没完成就又按了 ⌥P
             writeBack = nil
@@ -247,7 +248,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
                 let c = await Selection.capture()
                 capturing = false
                 guard let c else {
-                    showToast("没有可润色的文字：请选中文字，或把光标放在输入框里已写内容的末尾", icon: "exclamationmark.circle", seconds: 3)
+                    showToast(tr("没有可润色的文字：请选中文字，或把光标放在输入框里已写内容的末尾", "Nothing to polish: select text, or put the cursor at the end of what you typed"), icon: "exclamationmark.circle", seconds: 3)
                     return
                 }
                 state.source = c.text
@@ -280,22 +281,22 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
                 record(w.run, .copied)
                 server.reply(.cancel)
                 copyToPasteboard(w.text)
-                showToast("输入框已改动，没有写回。结果已复制到剪贴板", icon: "exclamationmark.triangle", seconds: 4)
+                showToast(tr("输入框已改动，没有写回。结果已复制到剪贴板", "The input changed, so nothing was written back. The result is on the clipboard"), icon: "exclamationmark.triangle", seconds: 4)
                 return
             }
             let ok = server.reply(.ok(Data(w.text.utf8)))
             record(w.run, ok ? .accepted : .copied)
             if ok {
-                showToast("已写回输入框（未发送）", icon: "checkmark.circle.fill")
+                showToast(tr("已写回输入框（未发送）", "Written back to the input (not sent)"), icon: "checkmark.circle.fill")
             } else {
                 copyToPasteboard(w.text)
-                showToast("写回失败：polish-edit 已退出。结果已复制到剪贴板", icon: "exclamationmark.triangle", seconds: 4)
+                showToast(tr("写回失败：polish-edit 已退出。结果已复制到剪贴板", "Write-back failed: polish-edit exited. The result is on the clipboard"), icon: "exclamationmark.triangle", seconds: 4)
             }
             return
         }
         server.reply(.cancel)
         guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            showToast("输入框为空", icon: "exclamationmark.circle")
+            showToast(tr("输入框为空", "The input is empty"), icon: "exclamationmark.circle")
             return
         }
         state.source = draft
@@ -315,7 +316,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
             writeBack = nil
             record(w.run, .failed)
             copyToPasteboard(w.text)
-            showToast("写回时没有连上 polish-edit。结果已复制到剪贴板", icon: "exclamationmark.triangle", seconds: 4)
+            showToast(tr("写回时没有连上 polish-edit。结果已复制到剪贴板", "Not connected to polish-edit when writing back. The result is on the clipboard"), icon: "exclamationmark.triangle", seconds: 4)
             return
         }
         capturing = true
@@ -324,11 +325,11 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
             capturing = false
             if let c {
                 state.source = c.text
-                state.target = "\(c.appName) · 选区（仅复制）"
+                state.target = tr("\(c.appName) · 选区（仅复制）", "\(c.appName) · Selection (copy only)")
                 begin(.copyOnly)
             } else {
                 record((state.current.name, bundleID(terminalPID), "terminal"), .failed) // 握手失败、也没有选区：这次 ⌥P 没开始润色
-                showToast("没有连上 polish-edit（已试 Ctrl+G 和 Ctrl+X）：请在 设置 → 终端集成 中安装 shell 片段，安装后需重启 CLI；OpenCode、Aider 等需在设置里选对应按键。若 zsh 草稿被清空，执行 print -z -- $ZLE_LINE_ABORTED 恢复",
+                showToast(tr("没有连上 polish-edit（已试 Ctrl+G 和 Ctrl+X）：请在 设置 → 终端集成 中安装 shell 片段，安装后需重启 CLI；OpenCode、Aider 等需在设置里选对应按键。若 zsh 草稿被清空，执行 print -z -- $ZLE_LINE_ABORTED 恢复", "Couldn’t connect to polish-edit (tried Ctrl+G and Ctrl+X): install the shell snippet in Settings → Terminal, then restart the CLI; OpenCode, Aider, etc. need their key chosen in Settings. If the zsh draft was cleared, run print -z -- $ZLE_LINE_ABORTED to restore it"),
                           icon: "terminal", seconds: 6)
             }
         }
@@ -354,13 +355,13 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
         let key = KeyStore.apiKey(p)
         let local = ["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "")
         if key.isEmpty && !local {
-            fail("配置「\(p.name)」还没有填写 API Key。按 ⌘, 打开设置。")
+            fail(tr("配置「\(p.name)」还没有填写 API Key。按 ⌘, 打开设置。", "Profile “\(p.name)” has no API key yet. Press ⌘, to open Settings."))
             return
         }
         if effectiveMode == .preview {
             if !panel.isVisible { showPanel() }
         } else {
-            showToast("润色中…  \(state.hotKey.name) 取消", icon: "sparkles", sticky: true)
+            showToast(tr("润色中…  \(state.hotKey.name) 取消", "Polishing…  \(state.hotKey.name) to cancel"), icon: "sparkles", sticky: true)
         }
         let source = state.source
         let t0 = Date()
@@ -381,7 +382,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
                 switch self.effectiveMode {
                 case .preview: break
                 case .auto: self.accept()
-                case .toast: self.showToast("润色完成 · ⏎ 替换 · ⌘C 复制 · Esc 放弃", icon: "checkmark.circle", confirm: true)
+                case .toast: self.showToast(tr("润色完成 · ⏎ 替换 · ⌘C 复制 · Esc 放弃", "Polished · ⏎ Replace · ⌘C Copy · Esc Discard"), icon: "checkmark.circle", confirm: true)
                 }
             case .failure(let e):
                 self.fail(e.localizedDescription)
@@ -411,7 +412,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
                 guard NSWorkspace.shared.frontmostApplication?.processIdentifier == terminalPID else {
                     record(r, .copied)
                     copyToPasteboard(text)
-                    showToast("前台已不是原终端，没有写回。结果已复制到剪贴板", icon: "exclamationmark.triangle", seconds: 4)
+                    showToast(tr("前台已不是原终端，没有写回。结果已复制到剪贴板", "The original terminal is no longer in front, so nothing was written back. The result is on the clipboard"), icon: "exclamationmark.triangle", seconds: 4)
                     return
                 }
                 writeBack = (source, text, r)
@@ -431,15 +432,15 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
                 guard now == c.text else {
                     record(r, .verifyFailed)
                     state.phase = .verifyFailed(same
-                        ? "回填前校验失败：原来的选中内容已变化。为防止误覆盖，没有替换。可按 ⌘C 复制结果后手动粘贴。"
-                        : "回填前校验失败：前台应用已切换。为防止误覆盖，没有替换。可按 ⌘C 复制结果后手动粘贴。")
+                        ? tr("回填前校验失败：原来的选中内容已变化。为防止误覆盖，没有替换。可按 ⌘C 复制结果后手动粘贴。", "Check before replacing failed: the selection changed. Nothing was replaced to avoid overwriting. Press ⌘C to copy the result and paste it yourself.")
+                        : tr("回填前校验失败：前台应用已切换。为防止误覆盖，没有替换。可按 ⌘C 复制结果后手动粘贴。", "Check before replacing failed: another app is in front. Nothing was replaced to avoid overwriting. Press ⌘C to copy the result and paste it yourself."))
                     showPanel()
                     return
                 }
                 await Selection.paste(text)
                 record(r, .accepted)
                 endSession()
-                showToast("已替换", icon: "checkmark.circle.fill")
+                showToast(tr("已替换", "Replaced"), icon: "checkmark.circle.fill")
             }
         }
     }
@@ -451,14 +452,14 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
         finish(.copied)
         restoreAutoSelection()
         endSession()
-        showToast("已复制到剪贴板，原文未改动", icon: "doc.on.clipboard")
+        showToast(tr("已复制到剪贴板，原文未改动", "Copied to the clipboard; the original is unchanged"), icon: "doc.on.clipboard")
     }
 
     func cancel() {
         polisher.cancel()
         let wasActive = origin != nil
         dismiss()
-        if wasActive { showToast("已取消，原文未改动", icon: "xmark.circle") }
+        if wasActive { showToast(tr("已取消，原文未改动", "Cancelled; the original is unchanged"), icon: "xmark.circle") }
     }
 
     /// Esc / 放弃：不改原文
@@ -546,17 +547,24 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
         if !panel.isVisible { panel.setFrame(clamp(anchor(for: size), size), display: true) }
         panel.orderFrontRegardless()
         panel.makeKey()
+        if !state.panelShown { state.panelShown = true } // 从隐藏到可见：播放出现动画
     }
 
-    func hidePanel() { panel.orderOut(nil) }
+    /// 不加淡出：⏎ 替换要立刻把焦点还给目标应用，再重读选区比对
+    func hidePanel() {
+        state.panelShown = false // 先停光边，再隐藏
+        panel.orderOut(nil)
+    }
 
     func showToast(_ text: String, icon: String, sticky: Bool = false, confirm: Bool = false, seconds: Double = 1.8) {
         toastTimer?.invalidate()
         toastConfirm = confirm
+        toastFade += 1
         let host = NSHostingView(rootView: ToastView(text: text, icon: icon))
         toast.contentView = host
         let s = host.fittingSize
         toast.setFrame(clamp(anchor(for: s), s), display: true)
+        NSAnimationContext.runAnimationGroup { $0.duration = 0; toast.animator().alphaValue = 1 } // 打断还在进行的淡出
         toast.orderFrontRegardless()
         if confirm { toast.makeKey() }
         if !sticky && !confirm {
@@ -566,9 +574,22 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
         }
     }
 
+    /// 纯显示的胶囊淡出 100ms；待确认的胶囊是 key 窗口，立刻隐藏，让焦点马上回到目标应用
     func hideToast() {
+        let confirm = toastConfirm
         toastConfirm = false
-        toast.orderOut(nil)
+        toastFade += 1
+        guard toast.isVisible, !confirm, !toast.isKeyWindow else { return toast.orderOut(nil) }
+        let current = toastFade
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.1
+            toast.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.toastFade == current else { return }
+                self.toast.orderOut(nil)
+            }
+        }
     }
 
     func handleKey(_ e: NSEvent) -> Bool {

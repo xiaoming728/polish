@@ -13,13 +13,17 @@ probe = '''import AppKit
 import SwiftUI
 import NaturalLanguage
 import PolishCore
-'''+(root / 'Sources/Polish/PanelBackground.swift').read_text()+views+'''
-struct State { var targetLanguage = TypingLanguage.english; var native = TypingLanguage.chinese }
+'''+(root / 'Sources/Polish/PanelBackground.swift').read_text()+(root / 'Sources/Polish/Motion.swift').read_text()+views+'''
+func tr(_ zh: String, _ en: String) -> String { zh }
+extension TypingLanguage { var uiName: String { name } }
+struct StateStub { var targetLanguage = TypingLanguage.english; var native = TypingLanguage.chinese }
 @MainActor final class Probe {
- let state = State()
+ let state = StateStub()
  let model = HintModel()
  let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
  var dismissal = 0
+ lazy var probe = NSHostingController(rootView: TypingHintView(model: model))
+ var lastWaiting: Bool?
  let anchor = CGRect(x: 100, y: 540, width: 510, height: 22)
  init() { panel.contentView = NSHostingView(rootView: TypingHintView(model: model)) }
  func fadeOut() { panel.orderOut(nil) }
@@ -38,27 +42,27 @@ struct State { var targetLanguage = TypingLanguage.english; var native = TypingL
   let p = Probe()
   p.model.pinyin = "等待翻译"; p.show()
   RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+  check(p.panel.frame.width == TypingHintView.width.lowerBound, "内容很短时提示框取最小宽度 240")
+  check(p.model.shown, "显示后 shown 为 true，驱动出现动画和扫光")
   p.model.en = "Please give me my book and read it carefully."
   p.model.pairs = [SentencePair(zh: "给我", en: "give me"), SentencePair(zh: "我的书", en: "my book")]
   let view = TypingHintView(model: p.model)
-  let labels = String(view.legend(p.model.en!).characters)
+  let labels = view.legend(p.model.en!)
   check(labels.contains("give（动词）") && labels.contains("me（代词）")
         && labels.contains("read（动词）") && labels.contains("it（代词）"), "逐词按完整英文解析，短语不能吞掉代词")
   let english = view.colored(p.model.en!, primary: true)
-  let legend = view.legend(p.model.en!)
-  let englishRange = english.range(of: "read")!
-  let legendRange = legend.range(of: "read（动词）")!
-  check(english[englishRange].foregroundColor == legend[legendRange].foregroundColor,
-        "没有中文对应片段的英文词也与词性标签同色")
+  check(english[english.range(of: "give me")!].foregroundColor != nil && english[english.range(of: "read")!].foregroundColor == nil,
+        "只有中英对应的词着色，词性不再用颜色")
   p.model.pairs = []
-  check(String(view.legend(p.model.en!).characters) == labels, "中文对应关系不能改变英文词性标签")
+  check(view.legend(p.model.en!) == labels, "中文对应关系不能改变英文词性标签")
   p.model.en = String(repeating: "Please give me my book and read it carefully. ", count: 12)
   p.model.zh = String(repeating: "请把我的书给我并仔细阅读它。", count: 12)
   p.show()
+  RunLoop.main.run(until: Date().addingTimeInterval(0.2)) // 「翻译中 → 结果」窗口尺寸过渡 120ms
   let measured = p.panel.frame.size
-  RunLoop.main.run(until: Date().addingTimeInterval(0.1))
   let actual = (p.panel.contentView as! NSHostingView<TypingHintView>).fittingSize
   check(measured.height >= actual.height, "返回成功时按实际多行高度设置面板，不能沿用等待态高度")
+  check(measured.width == TypingHintView.width.upperBound, "内容很长时提示框取最大宽度 420 并折行")
   check(!p.panel.frame.intersects(p.anchor) && p.panel.frame.maxY < p.anchor.minY,
         "多行结果上方放不下时放下方，不覆盖输入区域")
   p.panel.orderOut(nil)

@@ -15,6 +15,7 @@ def method(name):
 probe = '''import AppKit
 import Carbon
 import PolishCore
+func tr(_ zh: String, _ en: String) -> String { zh }
 struct State { var typingAssist = true; var current = defaultProfile(); var targetLanguage = TypingLanguage.english; var native = TypingLanguage.chinese; var reverseTyping = false }
 struct PolisherStub {
  var busy = false

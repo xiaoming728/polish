@@ -64,6 +64,7 @@ struct PanelView: View {
     var onSwitch: (Int) -> Void = { _ in }
     @State var showSource = false
     @State var showAllProfiles = false
+    @State private var failFlash = false // 请求失败：光边变橙色闪一下再淡出
 
     var problem: (String, Color)? {
         switch state.phase {
@@ -73,46 +74,55 @@ struct PanelView: View {
         }
     }
 
-    var acceptLabel: String { state.copyOnly ? "复制" : state.terminal ? "写回输入框" : "替换" }
+    var acceptLabel: String { state.copyOnly ? tr("复制", "Copy") : state.terminal ? tr("写回输入框", "Write back") : tr("替换", "Replace") }
+
+    /// 从按下到第一个字出现
+    var waiting: Bool { state.phase == .streaming && state.output.isEmpty }
+    /// 光边亮度：等待时全亮，流式输出时减半，其余（含面板隐藏）不显示
+    var glow: Double { !state.panelShown || state.phase != .streaming ? 0 : waiting ? 1 : 0.5 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "wand.and.stars").foregroundStyle(.purple)
+                Image(systemName: "wand.and.stars").foregroundStyle(Color.accentColor)
                 Text(state.current.name).font(.caption.weight(.semibold))
                 Text("→ \(state.target)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
                 status
             }
             .allowsHitTesting(false) // 标题行没有按钮：整行交给背后的拖动区
-            if let (msg, color) = problem {
-                Text(msg).font(.system(size: 12)).padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-                    .textSelection(.enabled)
+            if case .verifyFailed = state.phase, let (msg, color) = problem {
+                banner(msg, color).modifier(ShakeOnAppear())
+            } else if let (msg, color) = problem {
+                banner(msg, color)
             }
-            if state.phase == .done {
-                // 完成后可直接修改结果，⏎ 用修改后的内容回填
-                TextEditor(text: $state.output)
-                    .font(.system(size: 13))
-                    .scrollContentBackground(.hidden)
-            } else if !state.output.isEmpty || state.phase == .streaming {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        Text(state.output + (state.phase == .streaming ? "▍" : ""))
-                            .font(.system(size: 13)).textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Color.clear.frame(height: 1).id("end")
+            Group {
+                if state.phase == .done {
+                    // 完成后可直接修改结果，⏎ 用修改后的内容回填
+                    TextEditor(text: $state.output)
+                        .font(.system(size: 13))
+                        .scrollContentBackground(.hidden)
+                        .transition(.opacity)
+                } else if !state.output.isEmpty || state.phase == .streaming {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            Text(state.output + (state.phase == .streaming ? "▍" : ""))
+                                .font(.system(size: 13)).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Color.clear.frame(height: 1).id("end")
+                        }
+                        .onChange(of: state.output) { proxy.scrollTo("end", anchor: .bottom) } // 流式输出时始终跟到最新一行
                     }
-                    .onChange(of: state.output) { proxy.scrollTo("end", anchor: .bottom) } // 流式输出时始终跟到最新一行
+                    .transition(.opacity)
                 }
             }
+            .animation(waiting ? .easeOut(duration: 0.15) : nil, value: waiting) // ⌘1–9 重跑：旧结果淡出
             Spacer(minLength: 0)
             if state.copyOnly {
-                Text("没有连上 polish-edit，结果只能复制。若 zsh 草稿被清空，执行 print -z -- $ZLE_LINE_ABORTED 恢复。")
+                Text(tr("没有连上 polish-edit，结果只能复制。若 zsh 草稿被清空，执行 print -z -- $ZLE_LINE_ABORTED 恢复。", "Not connected to polish-edit, so the result can only be copied. If the zsh draft was cleared, run print -z -- $ZLE_LINE_ABORTED to restore it."))
                     .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
-            DisclosureGroup("原文", isExpanded: $showSource) {
+            DisclosureGroup(tr("原文", "Original"), isExpanded: $showSource) {
                 ScrollView {
                     Text(state.source).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -127,7 +137,7 @@ struct PanelView: View {
                         }.buttonStyle(.plain)
                     }
                     if state.profiles.count > 10 {
-                        Button(showAllProfiles ? "收起" : "更多 \(state.profiles.count - 10) 个") { showAllProfiles.toggle() }
+                        Button(showAllProfiles ? tr("收起", "Less") : tr("更多 \(state.profiles.count - 10) 个", "\(state.profiles.count - 10) more")) { showAllProfiles.toggle() }
                             .buttonStyle(.link).font(.system(size: 11))
                     }
                 }
@@ -138,41 +148,65 @@ struct PanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WindowDragArea())
         .modifier(PanelBackground(cornerRadius: 20))
+        .overlay { // 光边画在玻璃外面一层；隐藏面板时 glow 归零，旋转动画随视图移除而停止
+            ZStack {
+                if glow > 0 || failFlash {
+                    GlowRing(cornerRadius: 20, tint: failFlash ? .orange : .accentColor).opacity(failFlash ? 1 : glow).transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.2), value: glow)
+        }
+        .onChange(of: state.phase) { _, p in
+            guard case .failed = p else { return }
+            failFlash = true
+            DispatchQueue.main.async { withAnimation(.easeOut(duration: 0.2)) { failFlash = false } }
+        }
+        .modifier(PopIn(shown: state.panelShown))
+    }
+
+    func banner(_ msg: String, _ color: Color) -> some View {
+        Text(msg).font(.system(size: 12)).padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            .textSelection(.enabled)
     }
 
     @ViewBuilder var status: some View {
         switch state.phase {
-        case .streaming: HStack(spacing: 4) { ProgressView().controlSize(.small); Text("润色中").font(.caption) }
-        case .done: Label("完成", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
-        case .failed: Label("失败", systemImage: "xmark.octagon.fill").font(.caption).foregroundStyle(.red)
-        case .verifyFailed: Label("未替换", systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+        case .streaming: Text(tr("润色中", "Polishing")).font(.caption).foregroundStyle(.secondary) // 等待由光边表示
+        case .done: Label(tr("完成", "Done"), systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green).modifier(BounceOnAppear())
+        case .failed: Label(tr("失败", "Failed"), systemImage: "xmark.octagon.fill").font(.caption).foregroundStyle(.red)
+        case .verifyFailed: Label(tr("未替换", "Not replaced"), systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
         }
     }
 
     @ViewBuilder var footer: some View {
         switch state.phase {
         case .streaming:
-            KeyHint(state.hotKey.name, "取消"); KeyHint("Esc", "放弃")
+            KeyHint(state.hotKey.name, tr("取消", "Cancel")); KeyHint("Esc", tr("放弃", "Discard"))
         case .done:
             KeyHint("⏎", acceptLabel)
-            KeyHint("⇧⏎", "换行")
-            if !state.copyOnly { KeyHint("⌘C", "复制") }
-            KeyHint("Esc", "放弃")
+            KeyHint("⇧⏎", tr("换行", "New line"))
+            if !state.copyOnly { KeyHint("⌘C", tr("复制", "Copy")) }
+            KeyHint("Esc", tr("放弃", "Discard"))
         case .failed:
-            KeyHint(state.hotKey.name, "重试"); KeyHint("⌘,", "设置"); KeyHint("Esc", "关闭")
+            KeyHint(state.hotKey.name, tr("重试", "Retry")); KeyHint("⌘,", tr("设置", "Settings")); KeyHint("Esc", tr("关闭", "Close"))
         case .verifyFailed:
-            KeyHint("⌘C", "复制结果"); KeyHint("Esc", "关闭")
+            KeyHint("⌘C", tr("复制结果", "Copy result")); KeyHint("Esc", tr("关闭", "Close"))
         }
     }
 }
 
 struct ToastView: View {
     let text: String, icon: String
+    @State private var shown = false
     var body: some View {
         Label(text, systemImage: icon).font(.callout)
             .lineLimit(3).frame(maxWidth: 420, alignment: .leading).fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 12).padding(.vertical, 7)
             .background(.regularMaterial, in: Capsule())
+            .modifier(PopIn(shown: shown, scale: 1, dy: 6)) // 从下方 6pt 滑入
+            .onAppear { shown = true }
     }
 }
 
