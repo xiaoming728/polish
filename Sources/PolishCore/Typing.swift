@@ -188,7 +188,7 @@ public func fastRequest(_ p: Profile, apiKey: String, text: String) throws -> UR
     let user = (try? JSONSerialization.jsonObject(with: Data(p.extraJSON.utf8))) as? [String: Any] ?? [:]
     let merged = fastOverrides(p).merging(user) { _, u in u }
     q.extraJSON = String(decoding: try JSONSerialization.data(withJSONObject: merged), as: UTF8.self)
-    return try makeRequest(q, apiKey: apiKey, text: text)
+    return try makeRequest(q, apiKey: apiKey, text: text, tagLanguage: false)
 }
 
 /// 从 macOS「牛津英汉汉英词典」的纯文本释义里取第一个英文义项，取不到返回 nil（交给模型翻译）。
