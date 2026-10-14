@@ -10,7 +10,9 @@ os.symlink(os.path.join(BIN, "Polish"), os.path.join(TMP, "polish-edit"))
 SOCK = os.path.join(TMP, "s.sock")
 FALLBACK = os.path.join(TMP, "fallback-ed")
 with open(FALLBACK, "w") as f:  # 模拟用户原编辑器：把内容改成 echo FALLBACK-1
-    f.write("#!/bin/sh\nprintf 'echo FALLBACK-1' > \"$1\"\n")
+    # E2E_SLOW_FALLBACK=1：模拟新脚本首次执行被系统扫描拖慢（验证测试不依赖固定等待）
+    slow = "sleep 0.8\n" if os.environ.get("E2E_SLOW_FALLBACK") else ""
+    f.write("#!/bin/sh\n" + slow + "printf 'echo FALLBACK-1' > \"$1\"\n")
 os.chmod(FALLBACK, 0o755)
 ZDOT = os.path.join(TMP, "zdot")
 os.mkdir(ZDOT)
@@ -57,6 +59,11 @@ class Term:
     def ran(self, word):  # 某条 echo 是否真的被执行（输出行以该词开头）
         text = re.sub(rb"\x1b\[[0-9;?]*[a-zA-Z]", b"", self.out).decode(errors="replace").replace("\r", "")
         return re.search(rf"(^|\n){word}\n", text) is not None
+    def until(self, word, timeout=5.0):  # 等期望输出出现：新建脚本首次执行会被系统安全扫描拖慢 80–400ms，固定等待会偶发失败
+        end = time.time() + timeout
+        while not self.ran(word) and time.time() < end:
+            self.drain(0.1)
+        return self.ran(word)
     def close(self):
         try: os.kill(self.pid, 9)
         except ProcessLookupError: pass
@@ -75,43 +82,46 @@ a, t = App(), Term()
 t.key(b"echo DRAFT-1"); a.cmd("arm"); t.key(b"\x07"); a.cmd("confirm"); t.drain(0.5)
 before = t.ran("POLISHED-1")
 t.key(b"\r")
-case("确认写回，不自动执行", not before and t.ran("POLISHED-1") and not t.ran("DRAFT-1"), a)
+case("确认写回，不自动执行", not before and t.until("POLISHED-1") and not t.ran("DRAFT-1"), a)
 a.stop(); t.close()
 
 # 2. Esc 放弃：草稿原样
 a, t = App(), Term()
 t.key(b"echo DRAFT-1"); a.cmd("arm"); t.key(b"\x07"); a.cmd("cancel"); t.key(b"\r")
-case("Esc 放弃，草稿不变", t.ran("DRAFT-1") and not t.ran("POLISHED-1"), a)
+case("Esc 放弃，草稿不变", t.until("DRAFT-1") and not t.ran("POLISHED-1"), a)
 a.stop(); t.close()
 
 # 3. ⌘C 复制：草稿原样
 a, t = App(), Term()
 t.key(b"echo DRAFT-1"); a.cmd("arm"); t.key(b"\x07"); a.cmd("copy"); t.key(b"\r")
-case("⌘C 复制，草稿不变", t.ran("DRAFT-1") and not t.ran("POLISHED-1"), a)
+case("⌘C 复制，草稿不变", t.until("DRAFT-1") and not t.ran("POLISHED-1"), a)
 a.stop(); t.close()
 
 # 4. 未待命（用户自己按 Ctrl+G）→ 转交原编辑器
 a, t = App(), Term()
 t.key(b"echo DRAFT-1"); t.key(b"\x07"); t.key(b"\r")
-case("非 app 触发 → 转交原编辑器", t.ran("FALLBACK-1"), a)
+ok = t.until("FALLBACK-1")
+case("非 app 触发 → 转交原编辑器", ok, a)
+if not ok and os.environ.get("E2E_DEBUG"):  # 诊断：打印终端现场
+    print(re.sub(rb"\x1b\[[0-9;?]*[a-zA-Z]", b"", t.out).decode(errors="replace").replace("\r", "⏎"))
 a.stop(); t.close()
 
 # 5. 晚到（超过 1.5s）→ 降级提示 + 转交原编辑器
 a, t = App(), Term()
 t.key(b"echo DRAFT-1"); a.cmd("arm", wait=1.8); t.key(b"\x07"); t.key(b"\r")
-case("晚到 → 超时降级 + 转交原编辑器", t.ran("FALLBACK-1") and any("超时" in l for l in a.log), a)
+case("晚到 → 超时降级 + 转交原编辑器", t.until("FALLBACK-1") and any("超时" in l for l in a.log), a)
 a.stop(); t.close()
 
 # 6. app 未运行 → 转交原编辑器
 t = Term()
 t.key(b"echo DRAFT-1"); t.key(b"\x07"); t.key(b"\r")
-case("app 未运行 → 转交原编辑器", t.ran("FALLBACK-1"))
+case("app 未运行 → 转交原编辑器", t.until("FALLBACK-1"))
 t.close()
 
 # 7. 预览中 app 崩溃 → 草稿原样
 a, t = App(), Term()
 t.key(b"echo DRAFT-1"); a.cmd("arm"); t.key(b"\x07"); a.cmd("die"); t.key(b"\r")
-case("app 崩溃（EOF）→ 草稿不变", t.ran("DRAFT-1") and not t.ran("POLISHED-1"), a)
+case("app 崩溃（EOF）→ 草稿不变", t.until("DRAFT-1") and not t.ran("POLISHED-1"), a)
 a.stop(); t.close()
 
 # 8. 终端里 Ctrl+C → app 感知断开；记录 zsh 的表现
