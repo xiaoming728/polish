@@ -35,3 +35,11 @@
 ## 自检
 
 `build/polish-ui-prototype --demo a|b|c [settings]` 会在启动后自动唤起对应变体（以及设置窗口），用于截图，不发送合成按键。
+
+## 浮层动效对照（OverlayMotion.swift）
+
+```sh
+./run.sh motion --dark      # 或 --light；--reduce 模拟「减弱动态效果」；--en 看英文文案
+```
+
+一个舞台窗口左右两栏：左「改前」照搬现有的 TypingHintView / PanelView / ToastView，右「改后」是视觉统一、出现消失动画和等待流光的新写法。两栏共用假数据，按脚本循环播放：逐键拼音（不应有动画）→ ⌥1 / ⌥2 结果 → 淡出 → ⌥P 等待（光边旋转）→ 流式（光边减半）→ 完成（图标弹一下）→ ⌘2 重跑 → 校验失败（提示条晃一下）→ 已替换胶囊 → 请求失败（光边橙色闪一下）。录像不入库，存放在 `~/Movies/polish-overlay/`。
