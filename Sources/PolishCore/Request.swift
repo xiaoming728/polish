@@ -55,9 +55,23 @@ public func noThinking(_ p: Profile) -> [String: Any] {
     return [:]
 }
 
+/// 草稿主体语言，标在 <text lang> 上：只靠指令说「用原文语言」时，中文指令下的英文草稿常被译成中文（反之亦然）。
+/// NLLanguageRecognizer 会把夹英文术语的中文判成 en，所以按字符计数：一个汉字约抵 3 个字母
+public func draftLanguage(_ text: String) -> String? {
+    var han = 0, latin = 0, other = 0
+    for u in text.unicodeScalars where u.properties.isAlphabetic {
+        if u.properties.isIdeographic { han += 1 } else if u.isASCII { latin += 1 } else { other += 1 }
+    }
+    if han > other && han * 3 >= latin { return "zh" }
+    // shortcut: 纯 ASCII 字母一律算英文（不带重音的法语等会误标），有中英以外的用户时再细分
+    return han + other == 0 && latin > 0 ? "en" : nil
+}
+
 /// 润色请求：指令作 system，原文包在 <text> 中声明为待润色文本；额外 JSON 按顶层键覆盖默认值。
-public func makeRequest(_ p: Profile, apiKey: String, text: String) throws -> URLRequest {
-    let user = ["role": "user", "content": "<text>\n\(text)\n</text>"]
+/// tagLanguage：在 <text> 上标主体语言（输入提示不需要，拼音会被误标成 en）
+public func makeRequest(_ p: Profile, apiKey: String, text: String, tagLanguage: Bool = true) throws -> URLRequest {
+    let lang = tagLanguage ? draftLanguage(text).map { " lang=\"\($0)\"" } ?? "" : ""
+    let user = ["role": "user", "content": "<text\(lang)>\n\(text)\n</text>"]
     var body: [String: Any] = ["model": p.model, "stream": true]
     switch p.wire {
     case .openAI:
