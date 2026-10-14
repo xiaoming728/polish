@@ -54,6 +54,7 @@ public final class Polisher {
                 self?.task = nil
                 onDone(.success(out))
             } catch {
+                guard self?.generation == gen else { return } // 看门狗刚超时又被新请求取代：旧失败不能落到新请求头上
                 if let reason = watch.reason {
                     self?.task = nil
                     onDone(.failure(PolishError(message: reason)))
