@@ -221,7 +221,7 @@ struct ProfilesTab: View {
                         var p = state.profiles[index ?? 0]
                         p.id = UUID()
                         p.name = tr("新配置", "New Profile")
-                        p.instruction = defaultInstruction
+                        p.instruction = scenes(english: uiEnglish())[0].instruction
                         state.profiles.append(p)
                         sel = p.id
                     } label: { Image(systemName: "plus") }
@@ -299,7 +299,7 @@ struct ProfilesTab: View {
             }
             Section(tr("润色指令", "Polish Instruction")) {
                 TextEditor(text: $state.profiles[i].instruction).font(.system(size: 12)).frame(height: 110)
-                Button(tr("恢复默认指令", "Restore Default Instruction")) { state.profiles[i].instruction = defaultInstruction }
+                Button(tr("恢复默认指令", "Restore Default Instruction")) { state.profiles[i].instruction = scenes(english: uiEnglish())[0].instruction }
             }
             Section(tr("额外请求体 JSON（可选，按顶层键合并，写各家方言参数）", "Extra request body JSON (optional, merged by top-level key, for provider-specific parameters)")) {
                 TextEditor(text: $state.profiles[i].extraJSON).font(.system(size: 11, design: .monospaced)).frame(height: 50)
