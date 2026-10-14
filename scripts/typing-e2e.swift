@@ -5,18 +5,18 @@
 import AppKit
 import Carbon
 
+// 命令行程序用到 AppKit 时，macOS 会把它算成一个应用并挂在启动它的终端名下（Dock 里多出一个终端图标）。
+// 声明为后台进程，不进 Dock（实测：未加时每次运行都在 Dock 里多一个 Ghostty 图标）
+NSApplication.shared.setActivationPolicy(.prohibited)
+
 let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Polish/polish.log")
 let imeID = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "com.tencent.inputmethod.wetype.pinyin"
 
+/// 进程内执行 AppleScript：不另起 osascript 进程（每个 osascript 都会挂在终端名下进 Dock）
 func osa(_ script: String) -> String {
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-    p.arguments = ["-e", script]
-    let out = Pipe()
-    p.standardOutput = out
-    try? p.run()
-    p.waitUntilExit()
-    return String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    var err: NSDictionary?
+    let r = NSAppleScript(source: script)?.executeAndReturnError(&err)
+    return (r?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 func inputSource(_ id: String) -> TISInputSource? {
