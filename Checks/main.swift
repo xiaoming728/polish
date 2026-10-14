@@ -498,6 +498,8 @@ do {
     check(all.days == ["2025-12-31", "2026-01-01", "2026-01-02"], "全部：坏 JSON 和非日期文件跳过，不崩溃")
     check(all.total.polish[UsageDay.key(["精简", "com.mitchellh.ghostty", "terminal", "verify_failed"])] == 3
           && all.total.lat["polish_first"]?[7] == 1 && all.total.lat["polish_first"]?[49] == 2, "跨年合并：次数相加、直方图逐档相加，5s 以上进最后一档")
+    check(all.daily == [a, b, b] && all.total.polishCount() == 5 && all.total.polishCount(.accepted) == 2 && all.total.polishCount(.verifyFailed) == 3,
+          "daily 与 days 一一对应；按结局计数")
     let jan = UsageDay.load(dir: dir, from: "2026-01-01", to: "2026-01-02")
     check(jan.days == ["2026-01-01", "2026-01-02"] && jan.total.polish.values.reduce(0, +) == 2, "跨天合并，自定义范围首尾都算在内")
     check(UsageDay.load(dir: dir, from: "2026-01-02", to: "2025-12-31").days == all.days, "开始晚于结束时交换")

@@ -1,4 +1,5 @@
 import AppKit
+import Charts
 import PolishCore
 import ServiceManagement
 import SwiftUI
@@ -466,6 +467,7 @@ struct UsageTab: View {
     @State var end = Date()
     @State var total = UsageDay()
     @State var days: [String] = []
+    @State var daily: [UsageDay] = []
     @State var confirmClear = false
 
     func label(_ r: Range) -> String {
@@ -494,7 +496,7 @@ struct UsageTab: View {
         case .all: (from, to) = (nil, nil)
         case .custom: (from, to) = (start, end)
         }
-        (total, days) = UsageDay.load(dir: UsageStore.shared.dir, from: from.map { UsageDay.dayKey($0) }, to: to.map { UsageDay.dayKey($0) })
+        (total, days, daily) = UsageDay.load(dir: UsageStore.shared.dir, from: from.map { UsageDay.dayKey($0) }, to: to.map { UsageDay.dayKey($0) })
     }
 
     func appName(_ bundle: String) -> String {
@@ -509,11 +511,53 @@ struct UsageTab: View {
         return tr("约 \(Int(m * 100) + 50)ms", "about \(Int(m * 100) + 50) ms") // 取所在 100ms 档的中点
     }
 
+    /// 每天的润色次数：采纳 / 其他结局叠成一根柱子；只有两个系列，强调色对中性灰，带图例
+    var dailyChart: some View {
+        let acc = tr("采纳", "Accepted"), other = tr("其他结局", "Other outcomes")
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(tr("每天润色次数", "Polishes per day")).font(.subheadline)
+            Chart {
+                ForEach(Array(zip(days, daily)), id: \.0) { day, d in
+                    let date = f.date(from: day) ?? Date()
+                    let a = d.polishCount(.accepted)
+                    BarMark(x: .value(tr("日期", "Date"), date, unit: .day), y: .value(tr("次数", "Count"), a))
+                        .foregroundStyle(by: .value(tr("结局", "Outcome"), acc))
+                    BarMark(x: .value(tr("日期", "Date"), date, unit: .day), y: .value(tr("次数", "Count"), d.polishCount() - a))
+                        .foregroundStyle(by: .value(tr("结局", "Outcome"), other))
+                }
+            }
+            .chartForegroundStyleScale(domain: [acc, other], range: [Color.accentColor, Color.gray.opacity(0.45)])
+            .chartLegend(position: .top, alignment: .leading)
+            .frame(height: 150)
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// 首字耗时分布：每 100ms 一档的直方图，单系列不需要图例
+    func latencyChart(_ h: [Int]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(tr("首字耗时分布（最后一档为 4.9 秒以上）", "Time to first token (last bin is 4.9 s or more)")).font(.subheadline)
+            Chart(Array(h.enumerated()).filter { $0.element > 0 }, id: \.offset) { i, n in
+                BarMark(xStart: .value("ms", i * 100), xEnd: .value("ms", i * 100 + 100), y: .value(tr("次数", "Count"), n))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .chartXScale(domain: 0...(UsageDay.buckets * 100))
+            .chartXAxis { AxisMarks(values: .stride(by: 1000)) { v in
+                AxisGridLine()
+                AxisValueLabel { Text("\((v.as(Int.self) ?? 0) / 1000)s") }
+            } }
+            .frame(height: 120)
+        }
+        .padding(.vertical, 4)
+    }
+
     var body: some View {
         // 解开键：[配置, bundle, 来源, 结局]
         let rows = total.polish.map { (UsageDay.fields($0.key), $0.value) }.filter { $0.0.count == 4 }
-        let count = rows.reduce(0) { $0 + $1.1 }
-        let accepted = rows.filter { $0.0[3] == PolishOutcome.accepted.rawValue }.reduce(0) { $0 + $1.1 }
+        let count = total.polishCount()
+        let accepted = total.polishCount(.accepted)
         let profiles = Dictionary(grouping: rows, by: { $0.0[0] }).sorted { $0.key < $1.key }
         func failures(_ o: PolishOutcome) -> (Int, String) {
             let byApp = Dictionary(grouping: rows.filter { $0.0[3] == o.rawValue }, by: { $0.0[1] }).mapValues { $0.reduce(0) { $0 + $1.1 } }
@@ -537,6 +581,8 @@ struct UsageTab: View {
             if total.isEmpty {
                 Text(tr("这段时间没有记录", "No records in this period")).foregroundStyle(.secondary)
             } else {
+                if count > 0 { dailyChart }
+                if let first = total.lat[Latency.polishFirst.rawValue], first.contains(where: { $0 > 0 }) { latencyChart(first) }
                 LabeledContent(tr("润色", "Polish"), value: tr("\(count) 次 · 采纳率 \(percent(accepted, of: count))", "\(count) times · \(percent(accepted, of: count)) accepted"))
                 ForEach(profiles, id: \.key) { name, rs in
                     let n = rs.reduce(0) { $0 + $1.1 }

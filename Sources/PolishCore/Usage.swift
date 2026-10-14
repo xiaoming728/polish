@@ -63,6 +63,11 @@ public struct UsageDay: Codable, Equatable {
         }
     }
 
+    /// 润色次数；给了结局就只数这一种
+    public func polishCount(_ o: PolishOutcome? = nil) -> Int {
+        polish.reduce(0) { n, kv in o == nil || Self.fields(kv.key).last == o?.rawValue ? n + kv.value : n }
+    }
+
     public var isEmpty: Bool { polish.isEmpty && hint.isEmpty && lat.values.allSatisfy { $0.allSatisfy { $0 == 0 } } }
 
     /// 直方图中位数所在的档（偶数个样本取中间两个的平均档位，可能是 .5）；没有样本为 nil
@@ -88,12 +93,13 @@ public struct UsageDay: Codable, Equatable {
         return String(format: "%04d-%02d-%02d", x.year!, x.month!, x.day!)
     }
 
-    /// 合并目录里日期在 [from, to]（首尾都含，前后颠倒时交换；nil 表示不限）的文件；坏文件跳过。days：实际读到的日期，升序
-    public static func load(dir: URL, from: String?, to: String?) -> (total: UsageDay, days: [String]) {
+    /// 合并目录里日期在 [from, to]（首尾都含，前后颠倒时交换；nil 表示不限）的文件；坏文件跳过。
+    /// days：实际读到的日期，升序；daily：与 days 一一对应的当天汇总
+    public static func load(dir: URL, from: String?, to: String?) -> (total: UsageDay, days: [String], daily: [UsageDay]) {
         var lo = from, hi = to
         if let a = lo, let b = hi, a > b { (lo, hi) = (b, a) }
         let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
-        var total = UsageDay(), days: [String] = []
+        var total = UsageDay(), days: [String] = [], daily: [UsageDay] = []
         for name in names.sorted() where name.hasSuffix(".json") {
             let day = String(name.dropLast(5))
             guard day.count == 10, lo.map({ day >= $0 }) ?? true, hi.map({ day <= $0 }) ?? true,
@@ -101,8 +107,9 @@ public struct UsageDay: Codable, Equatable {
                   let d = try? JSONDecoder().decode(UsageDay.self, from: data) else { continue }
             total.merge(d)
             days.append(day)
+            daily.append(d)
         }
-        return (total, days)
+        return (total, days, daily)
     }
 }
 
