@@ -25,6 +25,7 @@ final class TypingAssist {
     private let polisher = Polisher()
     private var sentence = "" // 本句已上屏的中英文
     private var sentenceNeedsConversion = false // 没读到候选而暂存的拼音，区别于已确认英文
+    private var sentenceIncomplete = false // 终端漏读候选后只展示前文，不能再按整句退格
     private var sentenceDebounce: DispatchWorkItem?
     private let sentencePolisher = Polisher()
     private var sentenceResult: (text: String, t: SentenceTranslation)? // 本句（不含正在敲的词）的翻译
@@ -112,6 +113,8 @@ final class TypingAssist {
     private func clearSentence() {
         sentence = ""
         sentenceNeedsConversion = false
+        sentenceIncomplete = false
+        model.notice = nil
         candidates = ("", [])
         sentenceDebounce?.cancel()
         sentencePolisher.cancel()
@@ -136,6 +139,7 @@ final class TypingAssist {
         model.zh = r.map { sentenceNeedsConversion ? $0.zh ?? sentence : sentence }
         model.pairs = r?.pairs ?? []
         model.error = nil
+        model.notice = sentenceIncomplete ? "输入未完整读取，以下仅为前文；按 ⌥P 润色整段" : nil
         show()
         registerKeys()
     }
@@ -223,7 +227,7 @@ final class TypingAssist {
     private func trackSentence(_ code: Int, _ flags: CGEventFlags, _ event: CGEvent) {
         guard state.typingAssist, !isBusy(), !choosing else { return }
         if code == kVK_Return, buffer.text.isEmpty || !flags.isEmpty { return clearSentence() }
-        guard flags.subtracting(.maskShift).isEmpty, !IsSecureEventInputEnabled(), chineseInputActive() else { return }
+        guard !sentenceIncomplete, flags.subtracting(.maskShift).isEmpty, !IsSecureEventInputEnabled(), chineseInputActive() else { return }
         if code == kVK_Return {
             // 中文组合态回车确认原始字母，不是提交消息；终端未知字母仍不发送。
             guard !inTerminal() || committed(buffer.highlight) != nil else { return clearSentence() }
@@ -242,8 +246,13 @@ final class TypingAssist {
             if let word = committed(pick) {
                 add = word
             } else if inTerminal() {
-                Log.write("typing sentence: commit unknown in terminal, drop sentence")
-                return clearSentence() // 终端不发拼音给模型：缺了这个词，整句作废
+                guard !sentence.isEmpty else { return clearSentence() } // 没有可信前文：不处理终端未知输入。
+                Log.write("typing sentence: commit unknown in terminal, preserve prefix")
+                // shortcut: 终端漏读后只保留前文，能可靠读取完整输入时恢复整句跟踪
+                sentenceIncomplete = true
+                sentenceDebounce?.cancel()
+                if sentenceResult?.text != sentence { requestSentence("") }
+                return
             } else {
                 // 没读到候选（打字太快、候选窗已收起）：先记拼音，整句请求时让模型补成中文
                 Log.write("typing sentence: commit unknown (pick=\(pick)), keep pinyin")
@@ -297,7 +306,7 @@ final class TypingAssist {
         let t0 = Date()
         sentencePolisher.start(sentenceProfile(p), apiKey: key, text: s + tail, fast: true, onDelta: { _ in }, onDone: { [weak self] r in
             // 期间上屏了新内容、又敲键或换了候选：结果作废
-            guard let self, self.sentence == s, self.buffer.text == pinyin, self.buffer.highlight == highlight, self.sentenceNeedsConversion == unresolved else { return }
+            guard let self, self.sentence == s, (self.sentenceIncomplete && tail.isEmpty) || (self.buffer.text == pinyin && self.buffer.highlight == highlight), self.sentenceNeedsConversion == unresolved else { return }
             switch r {
             case .success(let out):
                 guard let t = parseSentence(out) else { self.model.error = "无法解析模型结果"; break }
@@ -345,7 +354,7 @@ final class TypingAssist {
         if buffer.text.isEmpty { candidates = ("", []) }
         debounce?.cancel()
         polisher.cancel()
-        guard buffer.ready else {
+        guard buffer.ready, !sentenceIncomplete else {
             hide()
             return
         }
@@ -354,12 +363,13 @@ final class TypingAssist {
         let pinyin = buffer.text
         let read = DispatchWorkItem { [weak self] in MainActor.assumeIsolated {
             guard let self, self.buffer.text == pinyin, self.candidates.pinyin != pinyin else { return }
-            let list = IME.candidates().list
+            let (list, frame) = IME.candidates()
             if !list.isEmpty { self.candidates = (pinyin, list) }
+            if let frame { self.imeFrame = frame }
         } }
         candidateRead?.cancel()
         candidateRead = read
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: read)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01, execute: read)
         let w = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.convert() } }
         debounce = w
         // 切换候选：等输入法重绘后立即换算；打字：流畅打字按键间隔约 150ms，250ms 仍能合并连续输入
@@ -458,7 +468,7 @@ final class TypingAssist {
 
     /// 只有对应结果已经出来时才占用 ⌥1 / ⌥2；其余时间不影响它们原本的输入
     private func registerKeys() {
-        guard panel.isVisible, panel.alphaValue > 0, !sentenceNeedsConversion else { return } // 本句里还有没补全的拼音：不知道该退几格
+        guard panel.isVisible, panel.alphaValue > 0, !sentenceNeedsConversion, !sentenceIncomplete else { return } // 本句里还有没补全的拼音：不知道该退几格
         if model.en != nil { HotKey.registerExtra(2, code: kVK_ANSI_1, mods: optionKey) { [weak self] in self?.choose(english: true) } }
         if model.zh != nil { HotKey.registerExtra(3, code: kVK_ANSI_2, mods: optionKey) { [weak self] in self?.choose(english: false) } }
     }
@@ -501,7 +511,7 @@ final class TypingAssist {
     // MARK: 选择
 
     private func choose(english: Bool) {
-        guard !choosing, let text = english ? model.en : model.zh, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+        guard !choosing, !sentenceIncomplete, let text = english ? model.en : model.zh, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
             reset()
             return
         }
@@ -528,6 +538,7 @@ final class HintModel: ObservableObject {
     @Published var en: String?
     @Published var zh: String?
     @Published var error: String?
+    @Published var notice: String?
     @Published var pairs: [SentencePair] = [] // 中英对应的词，同色显示
 }
 
@@ -536,6 +547,9 @@ struct TypingHintView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if let notice = model.notice {
+                Text(notice).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
             if let e = model.error {
                 Label(e, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
             } else if model.en != nil || model.zh != nil {
@@ -560,7 +574,7 @@ struct TypingHintView: View {
 
     func pending(_ key: String) -> some View {
         HStack(alignment: .top, spacing: 6) {
-            Text(key).font(.system(size: 11, weight: .medium, design: .rounded))
+            Text(model.notice == nil ? key : (key == "⌥1" ? "英文" : "中文")).font(.system(size: 11, weight: .medium, design: .rounded))
                 .padding(.horizontal, 5).padding(.vertical, 1)
                 .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
                 .fixedSize()
@@ -571,7 +585,7 @@ struct TypingHintView: View {
 
     func row(_ key: String, _ text: String, primary: Bool) -> some View {
         HStack(alignment: .top, spacing: 6) {
-            Text(key).font(.system(size: 11, weight: .medium, design: .rounded))
+            Text(model.notice == nil ? key : (key == "⌥1" ? "英文" : "中文")).font(.system(size: 11, weight: .medium, design: .rounded))
                 .padding(.horizontal, 5).padding(.vertical, 1)
                 .background(primary ? Color.accentColor.opacity(0.25) : Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
                 .fixedSize()

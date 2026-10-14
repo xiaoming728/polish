@@ -19,10 +19,12 @@ struct State { var typingAssist = true; var current = defaultProfile() }
 struct PolisherStub {
  var busy = false
  static var output = ""
+ static var deferred = false
+ static var completion: ((Result<String, Error>) -> Void)?
  func cancel() {}
  func start(_ p: Profile, apiKey: String, text: String, fast: Bool,
-            onDelta: (String) -> Void, onDone: (Result<String, Error>) -> Void) {
-  onDone(.success(Self.output))
+            onDelta: (String) -> Void, onDone: @escaping (Result<String, Error>) -> Void) {
+  if Self.deferred { Self.completion = onDone } else { onDone(.success(Self.output)) }
  }
 }
 struct PanelStub { var isVisible = true; var alphaValue = 1.0 }
@@ -35,7 +37,8 @@ struct PanelStub { var isVisible = true; var alphaValue = 1.0 }
 }
 @MainActor enum IME {
  static var frame: CGRect?
- static func candidates() -> (list: [String], frame: CGRect?) { ([], frame) }
+ static var list: [String] = []
+ static func candidates() -> (list: [String], frame: CGRect?) { (list, frame) }
 }
 @MainActor enum Selection {
  static var caret: CGRect?
@@ -45,13 +48,15 @@ struct PanelStub { var isVisible = true; var alphaValue = 1.0 }
  static func role(_ el: Int) -> String? { nil }
 }
 @MainActor final class Model {
- var pinyin = ""; var en: String?; var zh: String?; var error: String?; var pairs: [SentencePair] = []
+ var pinyin = ""; var en: String?; var zh: String?; var error: String?; var notice: String?; var pairs: [SentencePair] = []
 }
 @MainActor final class Probe {
  var state = State(); var isBusy: () -> Bool = { false }; var choosing = false
  var buffer = PinyinBuffer(); var polisher = PolisherStub(); var debounce: DispatchWorkItem?
  var candidateRead: DispatchWorkItem?; var pid: pid_t = 0
  var panel = PanelStub(); var sentencePolisher = PolisherStub()
+ var sentenceIncomplete = false
+ var sentenceDebounce: DispatchWorkItem?
  var sentenceNeedsConversion = false
  var sentence = ""; var sentenceResult: (text: String, t: SentenceTranslation)?
  var candidates: (pinyin: String, list: [String]) = ("", [])
@@ -60,7 +65,7 @@ struct PanelStub { var isVisible = true; var alphaValue = 1.0 }
  func inTerminal() -> Bool { terminal }
  func chineseInputActive() -> Bool { true }
  func sentenceChanged() {}
- func clearSentence() { sentence = ""; sentenceNeedsConversion = false; sentenceResult = nil }
+ func clearSentence() { sentence = ""; sentenceNeedsConversion = false; sentenceIncomplete = false; sentenceResult = nil; model.notice = nil }
  func convert() {}
  func show() { visible = true }
  func fadeOut() { visible = false }
@@ -165,6 +170,36 @@ probe += '''
   terminal.word("hao", "好"); terminal.press(kVK_Space, char: " ")
   terminal.press(kVK_ANSI_2, char: "2")
   assert(terminal.sentence == "好2", "已确认中文的终端句子可累积数字")
+  let fast = Probe(); fast.terminal = true
+  IME.list = ["你好"]; IME.frame = CGRect(x: 100, y: 300, width: 200, height: 32)
+  for c in "nihao" { fast.press(kVK_ANSI_N, char: String(c)) }
+  RunLoop.main.run(until: Date().addingTimeInterval(0.035))
+  IME.list = []; IME.frame = nil
+  fast.press(kVK_Space, char: " ")
+  assert(fast.sentence == "你好", "快速上屏前读取候选，不能等到候选窗关闭才读")
+  assert(fast.imeFrame != nil, "提前读取候选也保存位置，快速输入无须等待 convert 才能定位")
+  fast.sentenceResult = (fast.sentence, SentenceTranslation(en: "Hello", pairs: []))
+  fast.hide()
+  for c in "shijie" { fast.press(kVK_ANSI_S, char: String(c)) }
+  fast.press(kVK_Space, char: " ")
+  assert(fast.sentence == "你好" && fast.visible && fast.model.en == "Hello",
+         "完全漏读下一词时保留已确认前文与译文，不清掉整句")
+  assert(HotKey.ids.isEmpty && fast.model.notice != nil, "漏读后停止退格替换，并明确提示译文仅为前文")
+  fast.word("hao", "好"); fast.press(kVK_Space, char: " ")
+  assert(fast.sentence == "你好", "漏读后不能将后续词拼成缺词整句，造成错误替换")
+  fast.press(kVK_Return, char: "\\r")
+  assert(!fast.sentenceIncomplete && !fast.visible, "本次输入结束后恢复正常跟踪")
+  let pendingPrefix = Probe(); pendingPrefix.terminal = true
+  pendingPrefix.word("nihao", "你好"); pendingPrefix.press(kVK_Space, char: " ")
+  PolisherStub.deferred = true
+  for c in "shijie" { pendingPrefix.press(kVK_ANSI_S, char: String(c)) }
+  pendingPrefix.press(kVK_Space, char: " ")
+  for c in "hao" { pendingPrefix.press(kVK_ANSI_H, char: String(c)) }
+  PolisherStub.completion?(.success(#"{"en":"Hello","pairs":[]}"#))
+  assert(pendingPrefix.model.en == "Hello" && pendingPrefix.model.notice != nil && HotKey.ids.isEmpty,
+         "漏读时尚未返回的前文译文继续完成，后续打字不使它丢失")
+  PolisherStub.deferred = false; PolisherStub.completion = nil
+  IME.list = []
   let position = Probe()
   let screen = NSScreen.main!.visibleFrame
   IME.frame = CGRect(x: screen.midX, y: screen.midY, width: 200, height: 32)
@@ -193,7 +228,7 @@ probe += '''
   assert(next.x == screen.minX + 180 && next.y == screen.midY - 10,
          "本次提示结束后，下次输入重新确定起始位置")
   Selection.caret = nil
-  print("中英混编、整句、数字符号与首次定位固定回归检查通过")
+  print("快速输入、中英混编、整句与首次定位固定回归检查通过")
  }
 }
 '''
