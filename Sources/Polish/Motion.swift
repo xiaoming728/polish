@@ -65,8 +65,8 @@ struct GlowBorder: ViewModifier {
                         // 窗口与内容等大，往外扩会被裁掉：粗描边加向内的柔光
                         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         ZStack {
-                            shape.strokeBorder(Color.green.opacity(0.6), lineWidth: 10).blur(radius: 8)
-                            shape.strokeBorder(Color.green, lineWidth: 2.5)
+                            shape.strokeBorder(Color.green.opacity(0.5), lineWidth: 5).blur(radius: 4)
+                            shape.strokeBorder(Color.green, lineWidth: 1.5)
                         }
                         .clipShape(shape)
                         .allowsHitTesting(false)

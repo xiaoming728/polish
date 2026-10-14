@@ -5,13 +5,19 @@ import SwiftUI
 struct PanelBackground: ViewModifier {
     let cornerRadius: CGFloat
 
+    /// 系统玻璃 / 材质随窗口焦点变色（浅色下焦点窗口明显更白），翻译弹框又不能抢焦点；
+    /// 叠一层接近焦点外观的底色，两种浮层的颜色和透明度一致，只透出少量玻璃
+    private static let fill = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 0.31, alpha: 0.8) : NSColor(white: 0.9, alpha: 0.8)
+    })
+
     @ViewBuilder
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         if #available(macOS 26, *) {
-            content.glassEffect(.regular, in: shape)
+            content.background(Self.fill, in: shape).glassEffect(.regular, in: shape)
         } else {
-            content.background(.regularMaterial, in: shape)
+            content.background(Self.fill, in: shape).background(.regularMaterial, in: shape)
                 .overlay(shape.strokeBorder(Color.primary.opacity(0.1)))
         }
     }
