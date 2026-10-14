@@ -73,7 +73,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
         NSApp.mainMenu = editMenu()
-        let host = NSHostingView(rootView: PanelView(state: state))
+        let host = NSHostingView(rootView: PanelView(state: state, onSwitch: { [weak self] in self?.switchProfile($0) }))
         host.sizingOptions = [] // 不让 SwiftUI 内容尺寸约束窗口，否则拉大后会被弹回
         panel.contentView = host
         // ⌥P 面板可拖动（按住空白处）、可拉边缘放大；提示胶囊不需要
@@ -512,8 +512,11 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func handleKey(_ e: NSEvent) -> Bool {
         guard panel.isKeyWindow || (toast.isKeyWindow && toastConfirm) else { return false }
+        // 编辑结果时输入法还在组合：⏎ / Esc 交给输入法确认或取消
+        if panel.isKeyWindow, let tv = panel.firstResponder as? NSTextView, tv.hasMarkedText() { return false }
         switch Int(e.keyCode) {
         case kVK_Return, kVK_ANSI_KeypadEnter:
+            if !e.modifierFlags.intersection([.shift, .option]).isEmpty { return false } // 编辑结果时 ⇧⏎ / ⌥⏎ 换行
             if state.copyOnly { copyResult() } else { accept() }
             return true
         case kVK_Escape:
@@ -522,9 +525,14 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         default: break
         }
         guard e.modifierFlags.contains(.command), let ch = e.charactersIgnoringModifiers else { return false }
-        if ch == "c" { copyResult(); return true }
+        if ch == "c" {
+            // 编辑结果时选中了部分文字：照常复制选中部分
+            if let tv = panel.firstResponder as? NSTextView, tv.selectedRange().length > 0 { return false }
+            copyResult()
+            return true
+        }
         if ch == "," { openSettings(); return true }
-        if let n = Int(ch), n >= 1 { switchProfile(n - 1); return true }
+        if let n = Int(ch) { switchProfile(n == 0 ? 9 : n - 1); return true } // ⌘0 是第 10 个
         return false
     }
 

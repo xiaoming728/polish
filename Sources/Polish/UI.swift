@@ -9,11 +9,42 @@ struct KeyHint: View {
     init(_ k: String, _ t: String) { self.k = k; self.t = t }
     var body: some View {
         HStack(spacing: 3) {
-            Text(k).font(.system(size: 11, weight: .medium, design: .rounded))
-                .padding(.horizontal, 5).padding(.vertical, 1)
-                .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
-            Text(t).font(.system(size: 11)).foregroundStyle(.secondary)
+            if !k.isEmpty {
+                Text(k).font(.system(size: 11, weight: .medium, design: .rounded))
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+            }
+            Text(t).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
         }
+    }
+}
+
+/// 自动换行的横向排列：一行放不下就折到下一行；单项比整行还宽时压到整行宽（文字截断）
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 10, lineSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrange(proposal.width ?? .infinity, subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (v, f) in zip(subviews, arrange(bounds.width, subviews).frames) {
+            v.place(at: CGPoint(x: bounds.minX + f.minX, y: bounds.minY + f.minY), proposal: ProposedViewSize(f.size))
+        }
+    }
+
+    private func arrange(_ width: CGFloat, _ subviews: Subviews) -> (frames: [CGRect], size: CGSize) {
+        var frames: [CGRect] = [], x: CGFloat = 0, y: CGFloat = 0, line: CGFloat = 0, maxX: CGFloat = 0
+        for v in subviews {
+            var s = v.sizeThatFits(.unspecified)
+            s.width = min(s.width, width)
+            if x > 0, x + s.width > width { x = 0; y += line + lineSpacing; line = 0 }
+            frames.append(CGRect(origin: CGPoint(x: x, y: y), size: s))
+            x += s.width + spacing
+            line = max(line, s.height)
+            maxX = max(maxX, x - spacing)
+        }
+        return (frames, CGSize(width: maxX, height: y + line))
     }
 }
 
@@ -28,7 +59,9 @@ struct WindowDragArea: NSViewRepresentable {
 
 struct PanelView: View {
     @ObservedObject var state: AppState
+    var onSwitch: (Int) -> Void = { _ in }
     @State var showSource = false
+    @State var showAllProfiles = false
 
     var problem: (String, Color)? {
         switch state.phase {
@@ -56,7 +89,12 @@ struct PanelView: View {
                     .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                     .textSelection(.enabled)
             }
-            if !state.output.isEmpty || state.phase == .streaming {
+            if state.phase == .done {
+                // 完成后可直接修改结果，⏎ 用修改后的内容回填
+                TextEditor(text: $state.output)
+                    .font(.system(size: 13))
+                    .scrollContentBackground(.hidden)
+            } else if !state.output.isEmpty || state.phase == .streaming {
                 ScrollViewReader { proxy in
                     ScrollView {
                         Text(state.output + (state.phase == .streaming ? "▍" : ""))
@@ -79,15 +117,20 @@ struct PanelView: View {
                 }.frame(maxHeight: 60)
             }.font(.caption)
             if state.profiles.count > 1, state.phase == .streaming || state.phase == .done {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 10) {
-                        ForEach(Array(state.profiles.prefix(9).enumerated()), id: \.element.id) { i, p in
-                            KeyHint("⌘\(i + 1)", p.name).opacity(p.id == state.currentID ? 1 : 0.55)
-                        }
+                // 默认列前 10 个（⌘1…⌘9、⌘0），其余点「更多」展开；都可点击切换
+                FlowLayout {
+                    ForEach(Array(state.profiles.prefix(showAllProfiles ? state.profiles.count : 10).enumerated()), id: \.element.id) { i, p in
+                        Button { onSwitch(i) } label: {
+                            KeyHint(i < 9 ? "⌘\(i + 1)" : i == 9 ? "⌘0" : "", p.name).opacity(p.id == state.currentID ? 1 : 0.55)
+                        }.buttonStyle(.plain)
+                    }
+                    if state.profiles.count > 10 {
+                        Button(showAllProfiles ? "收起" : "更多 \(state.profiles.count - 10) 个") { showAllProfiles.toggle() }
+                            .buttonStyle(.link).font(.system(size: 11))
                     }
                 }
             }
-            HStack(spacing: 12) { footer }
+            FlowLayout(spacing: 12) { footer }
         }
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -110,6 +153,7 @@ struct PanelView: View {
             KeyHint(state.hotKey.name, "取消"); KeyHint("Esc", "放弃")
         case .done:
             KeyHint("⏎", acceptLabel)
+            KeyHint("⇧⏎", "换行")
             if !state.copyOnly { KeyHint("⌘C", "复制") }
             KeyHint("Esc", "放弃")
         case .failed:
