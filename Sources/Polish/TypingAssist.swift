@@ -150,8 +150,8 @@ final class TypingAssist {
         feed(classify(code, flags, event))
     }
 
-    /// 终端里可能在中文输入法的英文模式下敲 sudo 密码，不处理
-    private func excludedApp() -> Bool {
+    /// 终端里可能在中文输入法的英文模式下敲 sudo 密码：只处理读得到候选窗的输入，敲的字母不发给模型
+    private func inTerminal() -> Bool {
         terminalBundleIDs.contains(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "")
     }
 
@@ -193,7 +193,7 @@ final class TypingAssist {
     private func trackSentence(_ code: Int, _ flags: CGEventFlags, _ event: CGEvent) {
         guard state.typingAssist, !isBusy(), !choosing else { return }
         if code == kVK_Return { return clearSentence() } // 回车：消息已发出或换了行，开始新的一句
-        guard flags.subtracting(.maskShift).isEmpty, !IsSecureEventInputEnabled(), chineseInputActive(), !excludedApp() else { return }
+        guard flags.subtracting(.maskShift).isEmpty, !IsSecureEventInputEnabled(), chineseInputActive() else { return }
         let c = typedChar(event)
         let punct = c.flatMap { chinesePunctuation[$0] }
         var add = ""
@@ -203,6 +203,9 @@ final class TypingAssist {
             let pick = digit.map { $0 - 1 } ?? buffer.highlight
             if let word = committed(pick) {
                 add = word
+            } else if inTerminal() {
+                Log.write("typing sentence: commit unknown in terminal, drop sentence")
+                return clearSentence() // 终端不发拼音给模型：缺了这个词，整句作废
             } else {
                 // 没读到候选（打字太快、候选窗已收起）：先记拼音，整句请求时让模型补成中文
                 Log.write("typing sentence: commit unknown (pick=\(pick)), keep pinyin")
@@ -271,7 +274,7 @@ final class TypingAssist {
     }
 
     private func classify(_ code: Int, _ flags: CGEventFlags, _ event: CGEvent) -> TypingKey {
-        guard flags.isEmpty, !IsSecureEventInputEnabled(), chineseInputActive(), !excludedApp() else { return .other }
+        guard flags.isEmpty, !IsSecureEventInputEnabled(), chineseInputActive() else { return .other }
         if code == kVK_Delete { return .backspace }
         if !buffer.text.isEmpty, code == kVK_RightArrow { return .candidateNext }
         if !buffer.text.isEmpty, code == kVK_LeftArrow { return .candidatePrev }
@@ -344,7 +347,8 @@ final class TypingAssist {
         let candidate = buffer.highlight < list.count ? list[buffer.highlight] : nil
         Log.write("typing convert len=\(pinyin.count) highlight=\(buffer.highlight) candidate=\(candidate != nil) readMs=\(Int(Date().timeIntervalSince(t0) * 1000))")
         // 切过的候选已不在当前页、或读不到候选窗：无法确定用户看到的是哪个词，宁可不显示
-        if candidate == nil && buffer.highlight > 0 {
+        // 终端：没有候选窗可能是在输入法英文模式下敲密码，字母绝不发给模型
+        if candidate == nil && (buffer.highlight > 0 || inTerminal()) {
             hide()
             return
         }

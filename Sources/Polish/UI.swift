@@ -513,7 +513,7 @@ struct PermissionTab: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Section("隐私") {
-                Text("润色时只发送本次选中的文字（终端中为当前输入框草稿）。开启「输入时中英提示」后，会在中文输入法下读取正在敲的拼音键，并把拼音发给当前配置的模型，可随时在菜单中关闭；日志不含正文和 Key；API Key 存在本机文件（仅你的账号可读）；临时占用剪贴板后会恢复，期间若被其他程序改动则不恢复。")
+                Text("润色时只发送本次选中的文字（终端中为当前输入框草稿）。开启「输入时中英提示」后，会在中文输入法下读取正在敲的拼音键，并把拼音发给当前配置的模型（终端中只发送输入法候选词，不发送按键），可随时在菜单中关闭；日志不含正文和 Key；API Key 存在本机文件（仅你的账号可读）；临时占用剪贴板后会恢复，期间若被其他程序改动则不恢复。")
                     .font(.callout).fixedSize(horizontal: false, vertical: true)
             }
         }.formStyle(.grouped)
