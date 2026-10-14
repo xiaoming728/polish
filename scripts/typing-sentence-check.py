@@ -66,6 +66,7 @@ struct PanelStub { var isVisible = true; var alphaValue = 1.0 }
  func inTerminal() -> Bool { terminal }
  func typedChar(_ event: CGEvent) -> Character? { event.typedCharacter }
  var gate = GateStub()
+ var avoid: () -> CGRect? = { nil }
  func chineseInputActive() -> Bool { true }
  func sentenceChanged() {}
  func clearSentence() { sentence = ""; sentenceNeedsConversion = false; sentenceIncomplete = false; sentenceResult = nil; model.notice = nil }

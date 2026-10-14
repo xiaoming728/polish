@@ -162,6 +162,11 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 按开关启停输入监听；缺少权限时提示（辅助功能或输入监控）
     func syncTypingAssist() {
         typing.isBusy = { [weak self] in self?.origin != nil || self?.polisher.busy == true }
+        typing.avoid = { [weak self] in
+            guard let self else { return nil }
+            let open = [self.panel, self.toast].filter(\.isVisible).map(\.frame)
+            return open.isEmpty ? nil : open.reduce(open[0]) { $0.union($1) }
+        }
         typingRetry?.invalidate()
         typingRetry = nil
         if state.typingAssist {
@@ -462,6 +467,11 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 鼠标上方居中（放不下则下方）；x 先夹在鼠标所在屏内，避免 clamp 按原点认错屏
     func anchor(for size: NSSize) -> NSPoint {
+        // 翻译浮层开着：放在它上方（放不下放下方），留出间距、不互相遮挡
+        if let h = typing.hintFrame {
+            let vf = (NSScreen.screens.first { $0.frame.intersects(h) } ?? NSScreen.main!).visibleFrame
+            if let f = typingHintFrame(size: size, anchor: h, visibleFrame: vf) { return f.origin }
+        }
         let m = NSEvent.mouseLocation
         let vf = (NSScreen.screens.first { $0.frame.contains(m) } ?? NSScreen.main!).visibleFrame
         let x = min(max(m.x - size.width / 2, vf.minX + 8), vf.maxX - size.width - 8)

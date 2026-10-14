@@ -160,13 +160,14 @@ public func englishWordTags(_ text: String) -> [(range: Range<String.Index>, tag
 }
 
 /// 优先放在输入行／候选窗上方；放不下则放下方，两侧都不足时不覆盖输入区域。
-public func typingHintFrame(size: CGSize, anchor: CGRect, visibleFrame: CGRect) -> CGRect? {
+/// avoid：不能遮挡的其他窗口（如润色面板）；上下都放不下或都会遮挡时返回 nil
+public func typingHintFrame(size: CGSize, anchor: CGRect, visibleFrame: CGRect, avoid: CGRect? = nil) -> CGRect? {
     let screen = visibleFrame.insetBy(dx: 4, dy: 4)
     guard size.width <= screen.width, size.height <= screen.height else { return nil }
     let x = min(max(anchor.minX, screen.minX), screen.maxX - size.width)
     for y in [anchor.maxY + 16, anchor.minY - size.height - 16] {
         let frame = CGRect(origin: CGPoint(x: x, y: y), size: size)
-        if screen.contains(frame) { return frame }
+        if screen.contains(frame), !(avoid?.intersects(frame) ?? false) { return frame }
     }
     return nil
 }

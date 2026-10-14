@@ -56,6 +56,10 @@ final class TypingAssist {
     let state: AppState
     /// 润色流程进行中（预览面板、剪贴板占用）时暂停
     var isBusy: () -> Bool = { false }
+    /// 润色面板 / 提示的位置：翻译浮层不能遮挡它们
+    var avoid: () -> CGRect? = { nil }
+    /// 正在显示的翻译浮层；润色面板据此避让
+    var hintFrame: CGRect? { panel.isVisible && panel.alphaValue > 0 ? panel.frame : nil }
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var tapLoop: CFRunLoop?
@@ -569,7 +573,7 @@ final class TypingAssist {
         }
         guard let anchor = hintAnchor else { return nil }
         let screen = NSScreen.screens.first { $0.frame.contains(anchor.origin) } ?? NSScreen.main!
-        return typingHintFrame(size: size, anchor: anchor, visibleFrame: screen.visibleFrame)?.origin
+        return typingHintFrame(size: size, anchor: anchor, visibleFrame: screen.visibleFrame, avoid: avoid())?.origin
     }
 
     // MARK: 选择

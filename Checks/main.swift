@@ -360,6 +360,17 @@ do {
         }
     }
     check(typingHintFrame(size: size, anchor: screen, visibleFrame: screen) == nil, "上下都放不下时不覆盖输入区域")
+    let input = CGRect(x: 100, y: 300, width: 1, height: 22)
+    let panel = CGRect(x: 80, y: 330, width: 460, height: 270) // 润色面板占住输入行上方
+    let avoided = typingHintFrame(size: size, anchor: input, visibleFrame: screen, avoid: panel)
+    check(avoided != nil && !avoided!.intersects(panel) && avoided!.maxY <= input.minY - 16, "上方被润色面板占住时提示改放输入行下方")
+    check(typingHintFrame(size: size, anchor: input, visibleFrame: screen, avoid: screen) == nil, "上下都会遮挡润色面板时不显示提示")
+    let hint = CGRect(x: 100, y: 200, width: 420, height: 100)
+    let above = typingHintFrame(size: CGSize(width: 460, height: 270), anchor: hint, visibleFrame: screen)!
+    check(above.minY >= hint.maxY + 16 && screen.contains(above), "润色面板放在翻译浮层上方并留间距")
+    let low = CGRect(x: 100, y: 400, width: 420, height: 100)
+    let below = typingHintFrame(size: CGSize(width: 460, height: 270), anchor: low, visibleFrame: screen)!
+    check(below.maxY <= low.minY - 16 && screen.contains(below), "上方放不下时润色面板放在翻译浮层下方")
 }
 
 // MARK: 英文词性标注：只标注单词，保留原始字符串范围
