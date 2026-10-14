@@ -71,7 +71,7 @@ final class CommitGate: @unchecked Sendable {
 }
 
 /// 输入时中英提示：中文输入法下敲拼音时，在光标上方显示英文（⌥1，默认）和中文（⌥2）两个候选。
-/// 选中后用退格撤销刚敲的拼音键（候选态与已上屏两种情况都适用），再粘贴所选文本。
+/// 选中后先核对输入框，用 Esc 撤销组合态的拼音、退格删掉本句已上屏的字，再粘贴所选文本（choose）。
 /// 监听用独立线程上的主动 tap：只有上屏键会被拦到读完候选（CommitGate），处理都异步回主线程；⌥1 / ⌥2 只在有结果时临时注册为 Carbon 热键。
 /// 选词上屏的内容和中文标点累积成一句，提示框显示「整句 + 正在敲的词」的英文 / 中文，常驻到点鼠标、切换应用、回车或输入框清空；
 /// 这时 ⌥1 / ⌥2 退格删掉整句再粘贴。
@@ -637,7 +637,7 @@ final class TypingAssist {
             hide()
             return
         }
-        // 输入法把英文单词排在当前高亮（敲 hello 时首选是 hello）：用户在敲英文，译回默认语言；⌥1 按敲过的键数退格替换
+        // 输入法把英文单词排在当前高亮（敲 hello 时首选是 hello）：用户在敲英文，译回默认语言；⌥1 用 Esc 撤销拼音再粘贴
         if let c = candidate, sentence.isEmpty, c.contains(where: \.isLetter), c.unicodeScalars.allSatisfy(\.isASCII), reverseAllowed() {
             reverseText = pinyin
             return requestReverse()
@@ -759,20 +759,67 @@ final class TypingAssist {
             reset()
             return
         }
-        let count = model.reverse ? reverseText.count : buffer.text.count + sentence.count // 正在敲的拼音 + 本句已上屏的字
-        Log.write("typing choose english=\(english) backspaces=\(count) len=\(text.count)")
+        // 已上屏、要退格删掉的：本句，或反向提示里直接上屏的英文；组合态的拼音（含首选英文候选）用 Esc 撤销，不按键数退格
+        let committed = model.reverse ? (direct ? reverseText : "") : sentence
+        let pinyinKeys = model.reverse ? (direct ? 0 : reverseText.count) : buffer.text.count
+        Log.write("typing choose english=\(english) committed=\(committed.count) pinyin=\(pinyinKeys) len=\(text.count)")
         reset()
         choosing = true
         Task {
-            // shortcut: 按「敲了几个键就退几格」撤销拼音、按字数删本句；输入法若在组合态吞键、或本句记录与实际不符，会多删光标前文字
+            defer { choosing = false }
+            // 终端（AX value 是整屏回滚）和不暴露焦点的应用（微信 4.x）只能信本句记录；文本控件却读不到内容是偶发失败，重试一次仍不行就不删
+            let el = inTerminal() ? nil : Selection.focusedElement()
+            var before = el.flatMap(Selection.textBeforeCaret)
+            if before == nil, let el, Selection.role(el).map(Selection.editableRoles.contains) == true {
+                await sleepMs(30)
+                before = Selection.textBeforeCaret(el)
+                guard before != nil else { return copyOnly(text) }
+            }
+            // 读得到输入框就先核对；对不上（漏记、光标移走、输入法把拼音换成了别的字）一个字都不删
+            guard let count = replaceDeletes(before: before, committed: committed, pinyinKeys: pinyinKeys) else { return copyOnly(text) }
+            if pinyinKeys > 0 {
+                // 候选窗还在才能确定 Esc 会被输入法吃掉，而不是落到应用里（关掉对话框等）
+                guard let ime = IME.current(), IME.candidates(pid: ime.pid, deadline: Date().addingTimeInterval(0.1)).window != nil else { return copyOnly(text) }
+                Keys.post(kVK_Escape, [])
+                await sleepMs(30)
+                if let el, before != nil { // Esc 后光标前必须恰好以要删的字结尾，防止输入法把 Esc 当成上屏
+                    let end = Date().addingTimeInterval(0.2)
+                    var ok = false
+                    while !ok, Date() < end {
+                        ok = Selection.textBeforeCaret(el).flatMap { replaceDeletes(before: $0, committed: committed, pinyinKeys: 0) } == count
+                        if !ok { await sleepMs(25) }
+                    }
+                    guard ok else { return copyOnly(text) }
+                }
+            }
+            // 期间切走了应用：退格会落到别处
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return copyOnly(text) }
             for _ in 0..<count {
                 Keys.post(kVK_Delete, [])
                 await sleepMs(8)
             }
             await sleepMs(40)
             await Selection.paste(text)
-            choosing = false
         }
+    }
+
+    /// 不替换：结果放进剪贴板，提示框说明后淡出
+    private func copyOnly(_ text: String) {
+        Log.write("typing choose: field mismatch, copied only")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        model.pinyin = ""
+        model.en = nil
+        model.zh = nil
+        model.pairs = []
+        model.notice = nil
+        model.error = tr("已复制，未替换", "Copied, not replaced")
+        show()
+        let current = dismissal
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in MainActor.assumeIsolated {
+            guard let self, self.dismissal == current else { return }
+            self.fadeOut()
+        } }
     }
 }
 
