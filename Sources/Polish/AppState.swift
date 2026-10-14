@@ -21,7 +21,7 @@ enum Phase: Equatable {
     case verifyFailed(String)
 }
 
-/// 持久化设置（UserDefaults；Key 在钥匙串）+ 当前润色会话的显示状态
+/// 持久化设置（UserDefaults；Key 在本地 keys.json，见 KeyStore）+ 当前润色会话的显示状态
 @MainActor
 final class AppState: ObservableObject {
     private let defaults = UserDefaults.standard
@@ -55,16 +55,6 @@ final class AppState: ObservableObject {
         hotKey = defaults.data(forKey: "hotKey").flatMap { try? dec.decode(HotKeySpec.self, from: $0) } ?? .standard
         typingAssist = defaults.object(forKey: "typingAssist") as? Bool ?? true
         save() // init 中赋值不触发 didSet，补齐的场景要显式保存
-        // 0.0.1 早期按配置 id 存 Key；迁移到按服务归属，补齐的场景才能共用。
-        // 只做一次，且放到后台：ad-hoc 重建后读钥匙串会弹系统确认框，同步读会卡住启动
-        if !defaults.bool(forKey: "keysMigrated") {
-            defaults.set(true, forKey: "keysMigrated")
-            Task.detached {
-                for p in list where Keychain.get(keyAccount(p)) == nil {
-                    if let k = Keychain.get(p.id.uuidString) { Keychain.set(keyAccount(p), k) }
-                }
-            }
-        }
     }
 
     private func save() {

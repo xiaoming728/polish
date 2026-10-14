@@ -247,5 +247,33 @@ do {
     check(typingInstruction.contains("<text>") && typingInstruction.contains("\"en\"") && typingInstruction.contains("\"zh\""), "指令约定 JSON 字段 en / zh")
 }
 
+// MARK: 输入法第一候选词 / 快速请求
+
+do {
+    // 微信输入法候选窗 AX 树里的静态文本（实测顺序）
+    check(firstCandidate(["1", "你好", "2", "👋", "3", "泥嚎", "4", "几号"]) == "你好", "序号「1」后面的就是第一候选")
+    check(firstCandidate(["candidate shortcut icon", "1.", "世界", "2.", "视界"]) == "世界", "序号可带点号，前面的无关文本跳过")
+    check(firstCandidate(["你好", "泥嚎"]) == "你好", "没有序号时取第一个含汉字的文本")
+    check(firstCandidate(["1", "2", "3"]) == nil && firstCandidate([]) == nil, "没有候选返回 nil")
+    check(firstCandidate(["1", "👋", "2", "你好"]) == "👋", "第一候选是表情时照用（用户看到的就是它）")
+
+    var p = Profile(name: "x", preset: "DeepSeek", wire: .openAI, baseURL: "https://api.deepseek.com", model: "m", instruction: "i", extraJSON: "")
+    let b = body(try fastRequest(p, apiKey: "k", text: "你好"))
+    check(b["max_tokens"] as? Int == 60 && b["temperature"] as? Double == 0, "输入提示请求限制输出长度、温度 0")
+    check((b["thinking"] as? [String: String]) == ["type": "disabled"], "DeepSeek：关闭思考（实测：开着思考时 60 token 全被思考用掉，正文为空）")
+    p.extraJSON = #"{"max_tokens":200}"#
+    check(body(try fastRequest(p, apiKey: "k", text: "你好"))["max_tokens"] as? Int == 200, "用户的额外 JSON 仍可覆盖")
+
+    let qwen = Profile(name: "x", preset: "百炼", wire: .openAI, baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "m", instruction: "i", extraJSON: "")
+    check(body(try fastRequest(qwen, apiKey: "k", text: "t"))["enable_thinking"] as? Bool == false, "百炼：enable_thinking=false")
+    let other = Profile(name: "x", preset: "自定义", wire: .openAI, baseURL: "https://example.com/v1", model: "m", instruction: "i", extraJSON: "")
+    let ob = body(try fastRequest(other, apiKey: "k", text: "t"))
+    check(ob["max_tokens"] == nil && ob["thinking"] == nil && ob["temperature"] as? Double == 0, "未知服务：不限长、不发方言参数（防推理模型空结果 / 报错），只设温度 0")
+    let claude = Profile(name: "x", preset: "Anthropic", wire: .anthropic, baseURL: "https://api.anthropic.com", model: "m", instruction: "i", extraJSON: "")
+    let cb = body(try fastRequest(claude, apiKey: "k", text: "t"))
+    check(cb["max_tokens"] as? Int == 60 && cb["thinking"] == nil, "Anthropic：默认不思考，直接限长")
+    check(translateInstruction.contains("<text>") && !translateInstruction.contains("JSON"), "翻译指令只要译文，不要 JSON")
+}
+
 print(failures == 0 ? "\n全部通过" : "\n\(failures) 项失败")
 exit(failures == 0 ? 0 : 1)

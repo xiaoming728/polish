@@ -34,7 +34,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-# 有本地签名证书（scripts/make-signing-cert.sh）就用它：身份固定，重建后不必重新授予辅助功能 / 输入监控 / 钥匙串
+# 有本地签名证书（scripts/make-signing-cert.sh）就用它：身份固定，重建后不必重新授予辅助功能 / 输入监控
 IDENTITY="Polish Local Signing"
 if security find-identity -p codesigning 2>/dev/null | grep -q "\"$IDENTITY\""; then
     codesign --force --sign "$IDENTITY" "$APP"

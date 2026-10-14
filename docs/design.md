@@ -10,7 +10,7 @@
 - 菜单栏常驻（无 Dock 图标），全局快捷键默认 ⌥P，可以录制修改。
 - GUI 应用：读选区 → 流式润色 → 按回填方式（预览 / 自动替换 / 小提示确认）写回。
 - 终端（Terminal.app、Ghostty、iTerm2）：发送 Ctrl+G，由 `polish-edit` 接管整段草稿 → 润色 → 写回输入框，不自动执行或发送。zsh、Claude Code、Codex 均可用。
-- 多套配置（服务商 + Base URL + 模型 + 润色指令 + 额外请求体 JSON），API Key 存在钥匙串。
+- 多套配置（服务商 + Base URL + 模型 + 润色指令 + 额外请求体 JSON），API Key 存在本地文件（见第 6 节）。
 - 默认带 6 个场景（⌘1–6）：默认润色、精简、结构化、仅纠错、译成英文、译成中文。不收「扩写 / 补充细节」，因为会凭空添加需求。老用户首次升级时补齐一次，沿用第一套配置的服务连接。
 - 两种协议：OpenAI 兼容（Chat Completions）、Anthropic Messages。附带常见厂商预设。
 - 设置界面：配置、通用、终端集成、权限与隐私。
@@ -29,7 +29,7 @@
 
 | 路线 | 优点 | 缺点 |
 |---|---|---|
-| **Swift 原生 + SwiftPM（采用）** | AX、CGEvent、Carbon、Keychain 都是一手 API；体积小；不抢焦点的浮动面板容易做 | 本机没有 Xcode，只能用 CLT，测试框架不可用（用断言自检代替） |
+| **Swift 原生 + SwiftPM（采用）** | AX、CGEvent、Carbon 都是一手 API；体积小；不抢焦点的浮动面板容易做 | 本机没有 Xcode，只能用 CLT，测试框架不可用（用断言自检代替） |
 | Electron / Tauri | UI 迭代快 | 系统 API 都要绕原生桥；常驻内存大；非激活浮动面板和焦点控制更难 |
 
 不使用第三方依赖。快捷键自写 Carbon 实现，见「快捷键实现：修补 KeyboardShortcuts 还是自写 Carbon 热键」。
@@ -94,10 +94,10 @@
 ## 6. 权限、密钥与打包
 
 - **权限**：辅助功能（AX 读取、CGEvent 投递）。首次启动时请求授权；未授权时菜单顶部显示警告。全局快捷键（Carbon）不需要权限。
-- **密钥**：传统 login keychain（`kSecClassGenericPassword`，service 为 `Polish`，account 为 `base:<Base URL>`，同一服务的场景共用一个 Key；兼容早期按配置 id 存的 Key 并自动迁移）。ad-hoc 签名下不能用 data protection keychain。
+- **密钥**：本地文件 `~/Library/Application Support/Polish/keys.json`（目录 0700、文件 0600，先写临时文件再原子改名），键为 `base:<Base URL>`，同一服务的场景共用一个 Key。**禁止使用钥匙串**（用户 2026-10-14 要求：无团队 ID 的签名下钥匙串每次升级都弹确认框）。ad-hoc 签名下不能用 data protection keychain。
 - **其他设置**：配置、回填方式、快捷键存在 UserDefaults。
 - **打包**：`scripts/build-app.sh`。步骤为 `swift build -c release` → 组装 `build/Polish.app`（Info.plist 含 `LSUIElement`）→ 创建 `polish-edit` 符号链接 → `codesign -s -` 做 ad-hoc 签名 → `codesign --verify --strict` 校验。
-- **已知代价**：ad-hoc 签名的身份随每次重建变化，重建后需要重新授予辅助功能权限，钥匙串也可能弹窗确认。
+- **签名**：有本地证书「Polish Local Signing」（`scripts/make-signing-cert.sh`）时用它签名，身份为 bundle id + 证书，重建后辅助功能 / 输入监控授权不失效；否则 ad-hoc，重建后需重新授权。
 
 ## 7. 研发计划与验收
 
@@ -106,7 +106,7 @@
 - 验收：`swift run core-checks` 全部通过。
 
 **阶段 2：App 外壳**
-- 内容：菜单栏、Carbon 快捷键与录制、设置界面、钥匙串、配置持久化。
+- 内容：菜单栏、Carbon 快捷键与录制、设置界面、Key 与配置持久化。
 - 验收：`scripts/build-app.sh` 成功，并通过 `codesign --verify --strict`；启动后菜单栏出现图标，设置能保存和读回。
 
 **阶段 3：GUI 流程**

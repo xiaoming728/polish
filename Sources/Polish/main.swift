@@ -7,6 +7,12 @@ if (CommandLine.arguments[0] as NSString).lastPathComponent == "polish-edit" {
     EditClient.run(CommandLine.arguments.count > 1 ? CommandLine.arguments.last : nil)
 }
 
+if CommandLine.arguments.contains("--bench") { // 开发用：输入提示请求方式的消融计时
+    FileHandle.standardError.write(Data("bench: start\n".utf8))
+    Task.detached { await Bench.run() }
+    RunLoop.main.run()
+}
+
 MainActor.assumeIsolated {
     let app = NSApplication.shared
     let controller = Controller()

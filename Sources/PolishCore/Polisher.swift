@@ -25,7 +25,7 @@ public final class Polisher {
         task = nil
     }
 
-    public func start(_ p: Profile, apiKey: String, text: String,
+    public func start(_ p: Profile, apiKey: String, text: String, fast: Bool = false,
                onDelta: @escaping (String) -> Void, onDone: @escaping (Result<String, Error>) -> Void) {
         cancel()
         generation += 1
@@ -45,7 +45,7 @@ public final class Polisher {
             }
             defer { dog.cancel() }
             do {
-                let out = try await Self.stream(p, apiKey: apiKey, text: text) { s in
+                let out = try await Self.stream(p, apiKey: apiKey, text: text, fast: fast) { s in
                     watch.gotFirst = true
                     guard self?.generation == gen else { return } // 已被新请求取代：丢弃旧流的增量
                     onDelta(s)
@@ -76,8 +76,9 @@ public final class Polisher {
         }
     }
 
-    public static func stream(_ p: Profile, apiKey: String, text: String, onDelta: @escaping (String) -> Void) async throws -> String {
-        var req = try makeRequest(p, apiKey: apiKey, text: text)
+    /// fast：输入提示这类短结果，用 fastRequest（限长、温度 0）
+    public static func stream(_ p: Profile, apiKey: String, text: String, fast: Bool = false, onDelta: @escaping (String) -> Void) async throws -> String {
+        var req = try fast ? fastRequest(p, apiKey: apiKey, text: text) : makeRequest(p, apiKey: apiKey, text: text)
         req.timeoutInterval = 120 // 空闲超时兜底；首字与总时长由 start() 的看门狗控制
         let (bytes, resp) = try await URLSession.shared.bytes(for: req)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0

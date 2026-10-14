@@ -163,7 +163,6 @@ struct ProfilesTab: View {
                     Button {
                         guard let i = index, state.profiles.count > 1 else { return }
                         let id = state.profiles[i].id
-                        Keychain.set(id.uuidString, "") // 只清旧版按配置存的 Key；按服务存的 Key 可能被其他场景共用
                         state.profiles.remove(at: i)
                         if state.currentID == id { state.currentID = state.profiles[0].id }
                         sel = state.currentID
@@ -182,7 +181,7 @@ struct ProfilesTab: View {
     }
 
     func loadKey() {
-        if let i = index { key = Keychain.apiKey(state.profiles[i]) }
+        if let i = index { key = KeyStore.apiKey(state.profiles[i]) }
     }
 
     func form(_ i: Int) -> some View {
@@ -212,8 +211,8 @@ struct ProfilesTab: View {
                     Text("同一服务的场景共用").font(.caption).foregroundStyle(.secondary)
                 }
                 .onChange(of: key) { _, v in
-                    guard v != Keychain.apiKey(state.profiles[i]) else { return } // 切换配置时的载入不算修改
-                    if !Keychain.set(keyAccount(state.profiles[i]), v) { status = "✗ API Key 保存到钥匙串失败" }
+                    guard v != KeyStore.apiKey(state.profiles[i]) else { return } // 切换配置时的载入不算修改
+                    if !KeyStore.set(keyAccount(state.profiles[i]), v) { status = "✗ API Key 保存失败" }
                 }
             }
             LabeledContent("模型") {
@@ -416,7 +415,7 @@ struct PermissionTab: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Section("隐私") {
-                Text("润色时只发送本次选中的文字（终端中为当前输入框草稿）。开启「输入时中英提示」后，会在中文输入法下读取正在敲的拼音键，并把拼音发给当前配置的模型，可随时在菜单中关闭；日志不含正文和 Key；API Key 存在钥匙串；临时占用剪贴板后会恢复，期间若被其他程序改动则不恢复。")
+                Text("润色时只发送本次选中的文字（终端中为当前输入框草稿）。开启「输入时中英提示」后，会在中文输入法下读取正在敲的拼音键，并把拼音发给当前配置的模型，可随时在菜单中关闭；日志不含正文和 Key；API Key 存在本机文件（仅你的账号可读）；临时占用剪贴板后会恢复，期间若被其他程序改动则不恢复。")
                     .font(.callout).fixedSize(horizontal: false, vertical: true)
             }
         }.formStyle(.grouped)

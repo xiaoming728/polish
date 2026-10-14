@@ -1,6 +1,7 @@
 #!/bin/sh
 # 生成本地代码签名证书「Polish Local Signing」并导入登录钥匙串（只需一次）。
-# 作用：签名身份固定为「bundle id + 证书」，重建后辅助功能、输入监控、钥匙串授权都不失效。
+# 作用：签名身份固定为「bundle id + 证书」，重建后辅助功能、输入监控授权不失效。
+# 证书只供 codesign 使用；Polish 运行时不读写钥匙串（API Key 存本地 keys.json）。
 # 证书不加入系统信任，只供本机签名；首次签名时系统会询问是否允许 codesign 使用该密钥，选「始终允许」。
 # 撤销：钥匙串访问 → 登录 → 删除「Polish Local Signing」证书与密钥。
 set -eu

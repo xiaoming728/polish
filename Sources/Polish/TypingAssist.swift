@@ -34,7 +34,7 @@ final class TypingAssist {
         self.state = state
         panel.contentView = NSHostingView(rootView: TypingHintView(model: model))
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
-            // 只在真的换到另一个普通应用时重置：钥匙串确认框、输入法候选窗等后台进程被激活不算；
+            // 只在真的换到另一个普通应用时重置：系统授权弹窗、输入法候选窗等后台进程被激活不算；
             // 提示框首次弹出时系统会对当前应用重发激活通知，也不算（实测 TextEdit）
             let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             guard let app, app.activationPolicy == .regular else { return }
@@ -177,31 +177,45 @@ final class TypingAssist {
                 return
             }
         }
+        let t0 = Date()
         var p = state.current
-        p.instruction = typingInstruction
-        let key = Keychain.apiKey(p)
-        Log.write("typing convert len=\(pinyin.count)")
+        let key = KeyStore.apiKey(p)
+        // 读输入法的第一候选：中文不必等模型；英文只需翻译这个词（比拼音推断短、快）
+        let candidate = IME.firstCandidate()
+        Log.write("typing convert len=\(pinyin.count) candidate=\(candidate != nil) readMs=\(Int(Date().timeIntervalSince(t0) * 1000))")
         model.pinyin = pinyin
-        model.result = nil
+        model.en = nil
+        model.zh = candidate
         model.error = key.isEmpty && !["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "") ? "未配置 API Key（⌥P 菜单 → 设置）" : nil
         show()
+        if candidate != nil { registerKeys() }
         guard model.error == nil else { return }
-        polisher.start(p, apiKey: key, text: pinyin, onDelta: { _ in }, onDone: { [weak self] r in
+        p.instruction = candidate == nil ? typingInstruction : translateInstruction
+        polisher.start(p, apiKey: key, text: candidate ?? pinyin, fast: true, onDelta: { _ in }, onDone: { [weak self] r in
             guard let self, self.buffer.text == pinyin else { return } // 期间又敲了键：结果作废
             switch r {
             case .success(let s):
-                if let c = parseConversion(s) { self.model.result = c } else { self.model.error = "无法解析模型结果" }
+                if candidate != nil {
+                    self.model.en = s.trimmingCharacters(in: CharacterSet(charactersIn: "\"“”'` \n"))
+                } else if let c = parseConversion(s) {
+                    self.model.en = c.en
+                    self.model.zh = c.zh
+                } else {
+                    self.model.error = "无法解析模型结果"
+                }
             case .failure(let e):
                 self.model.error = e.localizedDescription
             }
             self.show()
-            Log.write("typing result ok=\(self.model.result != nil) error=\(self.model.error ?? "-") frame=\(self.panel.frame)")
-            // 只有出结果时才占用 ⌥1 / ⌥2；其余时间不影响它们原本的输入
-            if self.model.result != nil {
-                HotKey.registerExtra(2, code: kVK_ANSI_1, mods: optionKey) { [weak self] in self?.choose(english: true) }
-                HotKey.registerExtra(3, code: kVK_ANSI_2, mods: optionKey) { [weak self] in self?.choose(english: false) }
-            }
+            Log.write("typing result ok=\(self.model.en != nil && self.model.zh != nil) error=\(self.model.error ?? "-") ms=\(Int(Date().timeIntervalSince(t0) * 1000)) frame=\(self.panel.frame)")
+            self.registerKeys()
         })
+    }
+
+    /// 只有对应结果已经出来时才占用 ⌥1 / ⌥2；其余时间不影响它们原本的输入
+    private func registerKeys() {
+        if model.en != nil { HotKey.registerExtra(2, code: kVK_ANSI_1, mods: optionKey) { [weak self] in self?.choose(english: true) } }
+        if model.zh != nil { HotKey.registerExtra(3, code: kVK_ANSI_2, mods: optionKey) { [weak self] in self?.choose(english: false) } }
     }
 
     private func show() {
@@ -229,11 +243,10 @@ final class TypingAssist {
     // MARK: 选择
 
     private func choose(english: Bool) {
-        guard !choosing, let r = model.result, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+        guard !choosing, let text = english ? model.en : model.zh, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
             reset()
             return
         }
-        let text = english ? r.en : r.zh
         let count = buffer.text.count
         Log.write("typing choose english=\(english) backspaces=\(count) len=\(text.count)")
         reset()
@@ -254,7 +267,8 @@ final class TypingAssist {
 @MainActor
 final class HintModel: ObservableObject {
     @Published var pinyin = ""
-    @Published var result: Conversion?
+    @Published var en: String?
+    @Published var zh: String?
     @Published var error: String?
 }
 
@@ -265,9 +279,9 @@ struct TypingHintView: View {
         VStack(alignment: .leading, spacing: 4) {
             if let e = model.error {
                 Label(e, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
-            } else if let r = model.result {
-                row("⌥1", r.en, primary: true)
-                row("⌥2", r.zh, primary: false)
+            } else if model.en != nil || model.zh != nil {
+                if let en = model.en { row("⌥1", en, primary: true) } else { pending("⌥1") }
+                if let zh = model.zh { row("⌥2", zh, primary: false) } else { pending("⌥2") }
             } else {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -280,6 +294,15 @@ struct TypingHintView: View {
         .fixedSize()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.12)))
+    }
+
+    func pending(_ key: String) -> some View {
+        HStack(spacing: 6) {
+            Text(key).font(.system(size: 11, weight: .medium, design: .rounded))
+                .padding(.horizontal, 5).padding(.vertical, 1)
+                .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+            ProgressView().controlSize(.mini)
+        }
     }
 
     func row(_ key: String, _ text: String, primary: Bool) -> some View {

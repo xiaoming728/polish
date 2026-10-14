@@ -16,7 +16,7 @@ open /Applications/Polish.app
 首次启动后：
 
 1. **授予辅助功能权限**：系统设置 → 隐私与安全性 → 辅助功能 → 打开 Polish。每次重新构建后，都要先移除旧条目再重新添加，因为 ad-hoc 签名的身份会变。
-2. **填写配置**：菜单栏魔杖图标 → 设置… → 配置：选服务商，填 API Key（存在钥匙串）和模型，然后点「测试连接」。
+2. **填写配置**：菜单栏魔杖图标 → 设置… → 配置：选服务商，填 API Key（存在本机 `~/Library/Application Support/Polish/keys.json`，仅你的账号可读）和模型，然后点「测试连接」。
 3. **终端集成（可选）**：设置 → 终端集成，把 zsh 片段和 alias 复制到 `~/.zshrc`，然后重开终端。
 
 ## 使用
@@ -47,7 +47,7 @@ python3 -I scripts/terminal-e2e.py # 终端流程：zsh pty + 真实 polish-edit
 代码结构：
 
 - `Sources/PolishCore`：纯逻辑与可自动验证的部分。包括 SSE 解码、请求构造、模型请求、握手帧、socket 服务端和客户端、厂商预设。
-- `Sources/Polish`：菜单栏 app。包括快捷键、AX 读取与回填、剪贴板、钥匙串、界面。
+- `Sources/Polish`：菜单栏 app。包括快捷键、AX 读取与回填、剪贴板、Key 存储、输入时中英提示、界面。
 - `Checks`：断言自检，以及供端到端脚本使用的 `serve` 和 `stream` 子命令。
 
 GUI 流程（AX 读取、⌘V 回填）依赖辅助功能权限和真实应用，按 design.md 第 7 节的兼容矩阵手工验收。

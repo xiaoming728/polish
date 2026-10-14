@@ -1,7 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
 import PolishCore
-import Security
 
 // MARK: - 全局快捷键（Carbon，无需权限）
 
@@ -338,46 +337,39 @@ enum Selection {
     }
 }
 
-// MARK: - 钥匙串（ad-hoc 签名只能用传统 login keychain）
+// MARK: - API Key 存储
+// 本地文件 ~/Library/Application Support/Polish/keys.json（目录 0700、文件 0600）。
+// 用户 2026-10-14 要求：所有数据存本地目录，禁止使用钥匙串（无团队 ID 的签名下钥匙串每次升级都弹确认框）。
 
-enum Keychain {
-    static let service = "Polish"
+enum KeyStore {
+    static let url = Paths.support.appendingPathComponent("keys.json")
+    nonisolated(unsafe) static var cache: [String: String]?
 
-    static func query(_ account: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
-    }
-
-    static func get(_ account: String) -> String? {
-        var q = query(account)
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-        var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return nil }
-        return String(data: d, encoding: .utf8)
-    }
-
-    /// 内存缓存：ad-hoc 签名重建后读钥匙串会弹系统确认框，每次启动最多弹一次
-    nonisolated(unsafe) static var cache: [String: String] = [:]
-
-    /// 配置用的 Key：按服务归属；兼容 0.0.1 早期按配置 id 存的 Key
-    static func apiKey(_ p: Profile) -> String {
-        let account = keyAccount(p)
-        if let k = cache[account] { return k }
-        let k = get(account) ?? get(p.id.uuidString) ?? ""
-        if !k.isEmpty { cache[account] = k }
-        return k
+    static func all() -> [String: String] {
+        if let c = cache { return c }
+        let d = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+        cache = d
+        return d
     }
 
     /// 返回是否保存成功（空值即删除）
     @discardableResult
     static func set(_ account: String, _ value: String) -> Bool {
-        cache[account] = value.isEmpty ? nil : value
-        SecItemDelete(query(account) as CFDictionary)
-        guard !value.isEmpty else { return true }
-        var q = query(account)
-        q[kSecValueData as String] = Data(value.utf8)
-        return SecItemAdd(q as CFDictionary, nil) == errSecSuccess
+        var d = all()
+        d[account] = value.isEmpty ? nil : value
+        guard (try? FileManager.default.createDirectory(at: Paths.support, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])) != nil,
+              let data = try? JSONEncoder().encode(d) else { return false }
+        // 先以 0600 创建临时文件再原子改名：任何时刻都不存在他人可读的副本
+        let tmp = url.appendingPathExtension("tmp")
+        unlink(tmp.path)
+        guard FileManager.default.createFile(atPath: tmp.path, contents: data, attributes: [.posixPermissions: 0o600]),
+              rename(tmp.path, url.path) == 0 else { return false }
+        cache = d
+        return true
     }
+
+    /// 配置用的 Key：按服务归属（keyAccount），同一服务的场景共用
+    static func apiKey(_ p: Profile) -> String { all()[keyAccount(p)] ?? "" }
 }
 
 enum Permissions {
@@ -411,5 +403,37 @@ enum Log {
         h.seekToEndOfFile()
         h.write(Data(line.utf8))
         try? h.close()
+    }
+}
+
+// MARK: - 输入法候选窗
+
+enum IME {
+    /// 当前输入法候选窗里的第一候选（读输入法进程的 AX 树；读不到返回 nil，调用方退回模型推断）
+    @MainActor
+    static func firstCandidate() -> String? {
+        guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+              let bp = TISGetInputSourceProperty(src, kTISPropertyBundleID) else { return nil }
+        let bundleID = Unmanaged<CFString>.fromOpaque(bp).takeUnretainedValue() as String
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else { return nil }
+        let ax = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(ax, 0.1) // 在打字路径上：宁可读不到也不能卡
+        var v: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &v) == .success, let windows = v as? [AXUIElement] else { return nil }
+        var texts: [String] = []
+        func walk(_ e: AXUIElement, _ depth: Int) {
+            guard depth < 6, texts.count < 40 else { return }
+            var r: CFTypeRef?
+            if AXUIElementCopyAttributeValue(e, kAXRoleAttribute as CFString, &r) == .success, r as? String == kAXStaticTextRole as String {
+                var t: CFTypeRef?
+                if AXUIElementCopyAttributeValue(e, kAXValueAttribute as CFString, &t) == .success, let s = t as? String, !s.isEmpty { texts.append(s) }
+            }
+            var c: CFTypeRef?
+            if AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &c) == .success, let kids = c as? [AXUIElement] {
+                for k in kids { walk(k, depth + 1) }
+            }
+        }
+        for w in windows { walk(w, 0) }
+        return PolishCore.firstCandidate(texts)
     }
 }
