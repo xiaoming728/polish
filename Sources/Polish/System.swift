@@ -123,7 +123,6 @@ struct Captured {
     let pid: pid_t
     let appName: String
     let role: String? // 焦点元素的 AX role，回填前辅助校验
-    let bounds: CGRect? // Cocoa 坐标
     /// 没有选区时由 app 自动选中「光标前的内容」；放弃时据此恢复光标
     enum AutoSelect { case ax(caret: Int), keys }
     var autoSelect: AutoSelect? = nil
@@ -261,7 +260,7 @@ enum Selection {
         let el = focusedElement()
         if let el, let t = axSelectedText(el) {
             if !t.isEmpty {
-                return Captured(text: t, source: .ax, pid: pid, appName: name, role: role(el), bounds: bounds(el))
+                return Captured(text: t, source: .ax, pid: pid, appName: name, role: role(el))
             }
             // AX 明确告诉我们没有选区：不走 ⌘C（VS Code 等无选区时会复制整行）
             if let c = selectBeforeCaretAX(el, pid: pid, name: name) { return c }
@@ -269,7 +268,7 @@ enum Selection {
         }
         enableAX(app)
         if let t = await readViaCopy() {
-            return Captured(text: t, source: .copy, pid: pid, appName: name, role: el.flatMap(role), bounds: el.flatMap(bounds))
+            return Captured(text: t, source: .copy, pid: pid, appName: name, role: el.flatMap(role))
         }
         return await selectBeforeCaretKeys(el, pid: pid, name: name)
     }
@@ -289,7 +288,7 @@ enum Selection {
         guard let rv = AXValueCreate(.cfRange, &range),
               AXUIElementSetAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, rv) == .success,
               axSelectedText(el) == before else { return nil } // 设置后读回核对，防止应用不支持
-        return Captured(text: before, source: .ax, pid: pid, appName: name, role: role(el), bounds: bounds(el), autoSelect: .ax(caret: caret.location))
+        return Captured(text: before, source: .ax, pid: pid, appName: name, role: role(el), autoSelect: .ax(caret: caret.location))
     }
 
     /// 兜底：⇧⌘↑ 选到输入框开头再 ⌘C。只在焦点是文本控件时做，避免在网页正文里乱选
@@ -301,7 +300,7 @@ enum Selection {
             Keys.post(kVK_RightArrow, []) // 收起可能产生的空选区，光标回到原处
             return nil
         }
-        return Captured(text: t, source: .copy, pid: pid, appName: name, role: r, bounds: bounds(el), autoSelect: .keys)
+        return Captured(text: t, source: .copy, pid: pid, appName: name, role: r, autoSelect: .keys)
     }
 
     /// 放弃 / 复制时撤销自动选区，光标回到原来的位置（目标应用仍在前台时）

@@ -41,7 +41,7 @@ final class ActionItem: NSMenuItem {
 enum Origin {
     case gui(Captured)
     case terminal
-    case copyOnly(CGRect?)
+    case copyOnly
 }
 
 @MainActor
@@ -243,7 +243,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let c {
                 state.source = c.text
                 state.target = "\(c.appName) · 选区（仅复制）"
-                begin(.copyOnly(c.bounds))
+                begin(.copyOnly)
             } else {
                 showToast("没有连上 polish-edit：请在 设置 → 终端集成 中安装 shell 片段。若 zsh 草稿被清空，执行 print -z -- $ZLE_LINE_ABORTED 恢复",
                           icon: "terminal", seconds: 6)
@@ -411,21 +411,13 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return NSRect(origin: NSPoint(x: x, y: y), size: s)
     }
 
-    /// 选区下方（放不下则上方）；取不到选区位置时放在鼠标旁
+    /// 鼠标上方居中（放不下则下方）；x 先夹在鼠标所在屏内，避免 clamp 按原点认错屏
     func anchor(for size: NSSize) -> NSPoint {
-        var rect: CGRect?
-        switch origin {
-        case .gui(let c)?: rect = c.bounds
-        case .copyOnly(let b)?: rect = b
-        default: break
-        }
-        guard let r = rect else {
-            let m = NSEvent.mouseLocation
-            return NSPoint(x: m.x + 12, y: m.y - size.height - 18)
-        }
-        let below = NSPoint(x: r.minX, y: r.minY - size.height - 6)
-        let vf = (NSScreen.screens.first { $0.frame.contains(r.origin) } ?? NSScreen.main!).visibleFrame
-        return below.y >= vf.minY ? below : NSPoint(x: r.minX, y: r.maxY + 6)
+        let m = NSEvent.mouseLocation
+        let vf = (NSScreen.screens.first { $0.frame.contains(m) } ?? NSScreen.main!).visibleFrame
+        let x = min(max(m.x - size.width / 2, vf.minX + 8), vf.maxX - size.width - 8)
+        let above = m.y + 18
+        return NSPoint(x: x, y: above + size.height <= vf.maxY ? above : m.y - size.height - 18)
     }
 
     func showPanel() {
