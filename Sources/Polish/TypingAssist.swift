@@ -6,6 +6,7 @@ import SwiftUI
 /// 输入时中英提示：中文输入法下敲拼音时，在光标上方显示英文（⌥1，默认）和中文（⌥2）两个候选。
 /// 选中后用退格撤销刚敲的拼音键（候选态与已上屏两种情况都适用），再粘贴所选文本。
 /// 监听用 listen-only tap：不拦截、不阻塞任何按键；⌥1 / ⌥2 只在有结果时临时注册为 Carbon 热键。
+/// 选词上屏的内容和中文标点累积成一句，整句翻译常驻在提示框里，直到点鼠标、切换应用或回车。
 @MainActor
 final class TypingAssist {
     let state: AppState
@@ -17,6 +18,10 @@ final class TypingAssist {
     private var buffer = PinyinBuffer()
     private var debounce: DispatchWorkItem?
     private let polisher = Polisher()
+    private var sentence = "" // 本句已上屏的中文
+    private var sentenceDebounce: DispatchWorkItem?
+    private let sentencePolisher = Polisher()
+    private var candidates: (pinyin: String, list: [String]) = ("", []) // convert 读到的候选，上屏时取用
     private var pid: pid_t = 0
     private var imeFrame: CGRect? // 输入法候选窗：读不到光标的应用（微信等）用它定位
     private let panel: NSPanel = {
@@ -91,13 +96,29 @@ final class TypingAssist {
         buffer.reset()
         debounce?.cancel()
         polisher.cancel()
+        clearSentence()
         hide()
     }
 
+    private func clearSentence() {
+        sentence = ""
+        sentenceDebounce?.cancel()
+        sentencePolisher.cancel()
+        model.sentence = ""
+        model.translation = nil
+        model.sentenceError = nil
+    }
+
+    /// 收起单词提示；本句还有内容时面板保留，只显示整句
     private func hide() {
-        panel.orderOut(nil)
         HotKey.unregisterExtra(2)
         HotKey.unregisterExtra(3)
+        guard !sentence.isEmpty else { return panel.orderOut(nil) }
+        model.pinyin = ""
+        model.en = nil
+        model.zh = nil
+        model.error = nil
+        show()
     }
 
     // MARK: 事件
@@ -117,6 +138,7 @@ final class TypingAssist {
         let flags = event.flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift])
         // ⌥1 / ⌥2 由热键处理（会被热键吞掉、不进应用）；这里不能把它当成「结束输入」清掉结果
         if panel.isVisible, flags == .maskAlternate, code == kVK_ANSI_1 || code == kVK_ANSI_2 { return }
+        trackSentence(code, flags, event) // 先于 feed：feed 遇到空格等会清空拼音
         feed(classify(code, flags, event))
     }
 
@@ -125,16 +147,88 @@ final class TypingAssist {
         terminalBundleIDs.contains(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "")
     }
 
+    private func typedChar(_ event: CGEvent) -> Character? {
+        var len = 0
+        var chars = [UniChar](repeating: 0, count: 4)
+        event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &len, unicodeString: &chars)
+        return len == 1 ? Unicode.Scalar(chars[0]).map(Character.init) : nil
+    }
+
+    /// 上屏：有拼音时空格 / 数字 / 标点选中候选（标点再跟一个全角标点）；没拼音时标点直接上屏、退格删掉上一个字
+    private func trackSentence(_ code: Int, _ flags: CGEventFlags, _ event: CGEvent) {
+        guard state.typingAssist, !isBusy(), !choosing else { return }
+        if code == kVK_Return { return clearSentence() } // 回车：消息已发出或换了行，开始新的一句
+        guard flags.subtracting(.maskShift).isEmpty, !IsSecureEventInputEnabled(), chineseInputActive(), !excludedApp() else { return }
+        let c = typedChar(event)
+        let punct = c.flatMap { chinesePunctuation[$0] }
+        var add = ""
+        if !buffer.text.isEmpty {
+            let digit = flags.isEmpty ? c?.wholeNumberValue.flatMap { (1...9).contains($0) ? $0 : nil } : nil
+            guard (flags.isEmpty && code == kVK_Space) || digit != nil || punct != nil else { return }
+            let pick = digit.map { $0 - 1 } ?? buffer.highlight
+            guard let word = committed(pick) else {
+                Log.write("typing sentence: commit unknown (pick=\(pick))")
+                return
+            }
+            add = word
+        } else if code == kVK_Delete, flags.isEmpty, !sentence.isEmpty {
+            sentence.removeLast()
+            return sentence.isEmpty ? clearSentence() : sentenceChanged()
+        }
+        add += punct ?? ""
+        guard !add.isEmpty else { return }
+        sentence += add
+        sentenceChanged()
+    }
+
+    /// 刚上屏的是哪个候选：用 convert 读到的；按键太快还没读到就现读（输入法此时多半还没收起候选窗）
+    private func committed(_ index: Int) -> String? {
+        let list = candidates.pinyin == buffer.text ? candidates.list : IME.candidates().list
+        if index < list.count { return list[index] }
+        // 读不到候选窗（用的是模型推断的中文）：只有首选可信
+        return index == 0 && list.isEmpty && model.pinyin == buffer.text ? model.zh : nil
+    }
+
+    private func sentenceChanged() {
+        sentenceDebounce?.cancel()
+        sentencePolisher.cancel()
+        model.sentence = sentence
+        model.translation = nil
+        model.sentenceError = nil
+        show()
+        let w = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.translateSentence() } }
+        sentenceDebounce = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: w)
+    }
+
+    private func translateSentence() {
+        let s = sentence
+        let p = state.current
+        let key = KeyStore.apiKey(p)
+        if key.isEmpty && !["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "") {
+            model.sentenceError = "未配置 API Key（⌥P 菜单 → 设置）"
+            return show()
+        }
+        let t0 = Date()
+        sentencePolisher.start(sentenceProfile(p), apiKey: key, text: s, fast: true, onDelta: { _ in }, onDone: { [weak self] r in
+            guard let self, self.sentence == s else { return } // 期间又上屏了新内容：结果作废
+            switch r {
+            case .success(let out):
+                if let t = parseSentence(out) { self.model.translation = t } else { self.model.sentenceError = "无法解析模型结果" }
+            case .failure(let e):
+                self.model.sentenceError = e.localizedDescription
+            }
+            Log.write("typing sentence len=\(s.count) ok=\(self.model.translation != nil) pairs=\(self.model.translation?.pairs.count ?? 0) ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
+            self.show()
+        })
+    }
+
     private func classify(_ code: Int, _ flags: CGEventFlags, _ event: CGEvent) -> TypingKey {
         guard flags.isEmpty, !IsSecureEventInputEnabled(), chineseInputActive(), !excludedApp() else { return .other }
         if code == kVK_Delete { return .backspace }
         if !buffer.text.isEmpty, code == kVK_RightArrow { return .candidateNext }
         if !buffer.text.isEmpty, code == kVK_LeftArrow { return .candidatePrev }
-        var len = 0
-        var chars = [UniChar](repeating: 0, count: 4)
-        event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &len, unicodeString: &chars)
-        guard len == 1, let scalar = Unicode.Scalar(chars[0]) else { return .other }
-        let c = Character(scalar)
+        guard let c = typedChar(event) else { return .other }
         if c == "'" { return .apostrophe }
         return ("a"..."z").contains(c) ? .letter(c) : .other
     }
@@ -189,6 +283,7 @@ final class TypingAssist {
         let highlight = buffer.highlight
         let (list, frame) = IME.candidates()
         imeFrame = frame
+        candidates = (pinyin, list)
         let candidate = buffer.highlight < list.count ? list[buffer.highlight] : nil
         Log.write("typing convert len=\(pinyin.count) highlight=\(buffer.highlight) candidate=\(candidate != nil) readMs=\(Int(Date().timeIntervalSince(t0) * 1000))")
         // 切过的候选已不在当前页、或读不到候选窗：无法确定用户看到的是哪个词，宁可不显示
@@ -275,7 +370,12 @@ final class TypingAssist {
         }
         let count = buffer.text.count
         Log.write("typing choose english=\(english) backspaces=\(count) len=\(text.count)")
-        reset()
+        buffer.reset()
+        debounce?.cancel()
+        polisher.cancel()
+        sentence += text // 选中的内容也算本句上屏
+        sentenceChanged()
+        hide()
         choosing = true
         Task {
             // shortcut: 按「敲了几个键就退几格」撤销拼音；输入法若在组合态吞键会多删光标前文字，常规拼音下一一对应
@@ -296,6 +396,9 @@ final class HintModel: ObservableObject {
     @Published var en: String?
     @Published var zh: String?
     @Published var error: String?
+    @Published var sentence = ""
+    @Published var translation: SentenceTranslation?
+    @Published var sentenceError: String?
 }
 
 struct TypingHintView: View {
@@ -303,7 +406,10 @@ struct TypingHintView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if let e = model.error {
+            if !model.sentence.isEmpty { sentenceView }
+            if !model.sentence.isEmpty && !model.pinyin.isEmpty { Divider() }
+            if model.pinyin.isEmpty {
+            } else if let e = model.error {
                 Label(e, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
             } else if model.en != nil || model.zh != nil {
                 if let en = model.en { row("⌥1", en, primary: true) } else { pending("⌥1") }
@@ -320,6 +426,42 @@ struct TypingHintView: View {
         .fixedSize()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.12)))
+    }
+
+    static let palette: [Color] = [.blue, .orange, .green, .pink, .purple, .teal, .brown, .red]
+
+    /// 整句：中文、英文里对应的词同色
+    @ViewBuilder var sentenceView: some View {
+        let pairs = model.translation?.pairs ?? []
+        line(model.sentence, pairs.map(\.zh), wholeWords: false, weight: .regular)
+        if let t = model.translation {
+            line(t.en, pairs.map(\.en), wholeWords: true, weight: .semibold)
+        } else if let e = model.sentenceError {
+            Label(e, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+        } else {
+            ProgressView().controlSize(.mini)
+        }
+    }
+
+    /// 面板整体 fixedSize（按内容定大小），文本拿不到宽度上限不会换行：先量出单行宽度，超过 400 就固定 400 宽换行
+    func line(_ text: String, _ parts: [String], wholeWords: Bool, weight: Font.Weight) -> some View {
+        let w = (text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: weight == .semibold ? .semibold : .regular)]).width
+        return Text(colored(text, parts, wholeWords: wholeWords)).font(.system(size: 13, weight: weight))
+            .frame(width: min(ceil(w) + 2, 400), alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    func colored(_ text: String, _ parts: [String], wholeWords: Bool) -> AttributedString {
+        var out = AttributedString()
+        var at = text.startIndex
+        for (r, i) in colorRanges(text, parts, wholeWords: wholeWords) {
+            out += AttributedString(text[at..<r.lowerBound])
+            var seg = AttributedString(text[r])
+            seg.foregroundColor = Self.palette[i % Self.palette.count]
+            out += seg
+            at = r.upperBound
+        }
+        return out + AttributedString(text[at...])
     }
 
     func pending(_ key: String) -> some View {

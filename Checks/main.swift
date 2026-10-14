@@ -370,5 +370,33 @@ do {
     check(RcBlock.body(RcBlock.install(user, id: "zsh", body: "a\nb"), id: "zsh") == "a\nb", "多行内容原样取回")
 }
 
+// MARK: 整句翻译：解析、着色区间、请求参数
+
+do {
+    let t = parseSentence(#"```json\n{"en":"Hello, World.","pairs":[["你好","Hello"],["世界","World"]]}\n```"#)
+    check(t == SentenceTranslation(en: "Hello, World.", pairs: [SentencePair(zh: "你好", en: "Hello"), SentencePair(zh: "世界", en: "World")]), "解析整句译文与词对应")
+    check(parseSentence(#"{"en":"Hi","pairs":"bad"}"#) == SentenceTranslation(en: "Hi", pairs: []), "pairs 格式不对：只保留译文")
+    check(parseSentence(#"{"pairs":[]}"#) == nil && parseSentence("no") == nil, "缺译文返回 nil")
+
+    func spans(_ text: String, _ parts: [String], _ whole: Bool) -> [String] {
+        colorRanges(text, parts, wholeWords: whole).map { "\(text[$0.range])#\($0.index)" }
+    }
+    check(spans("你好，世界。", ["你好", "世界"], false) == ["你好#0", "世界#1"], "中文按词着色")
+    check(spans("Hello, World.", ["world", "hello"], true) == ["Hello#1", "World#0"], "英文语序不同、大小写不同也能对上，按位置排序")
+    check(spans("It is I", ["I"], true) == ["I#0"] && spans("It is I", ["I"], true).count == 1, "整词匹配：I 不命中 It")
+    check(spans("好好", ["好", "好"], false) == ["好#0", "好#1"], "重复词依次占用不同位置")
+    check(spans("abc", ["x", ""], true).isEmpty, "找不到或空的不着色")
+
+    let ds = Profile(name: "d", preset: "DeepSeek", wire: .openAI, baseURL: "https://api.deepseek.com", model: "deepseek-chat", instruction: "润色", extraJSON: "")
+    let sp = sentenceProfile(ds)
+    check(sp.instruction == sentenceInstruction, "整句用整句指令")
+    if !fastOverrides(ds).isEmpty, fastOverrides(ds)["max_tokens"] != nil {
+        check(body(try! fastRequest(sp, apiKey: "k", text: "你好"))["max_tokens"] as? Int == 400, "限长服务整句放宽到 400")
+    }
+    var mine = ds; mine.extraJSON = #"{"max_tokens":99}"#
+    check(body(try! fastRequest(sentenceProfile(mine), apiKey: "k", text: "x"))["max_tokens"] as? Int == 99, "用户自定义 max_tokens 优先")
+    check(chinesePunctuation[","] == "，" && chinesePunctuation["."] == "。", "中文标点映射")
+}
+
 print(failures == 0 ? "\n全部通过" : "\n\(failures) 项失败")
 exit(failures == 0 ? 0 : 1)
