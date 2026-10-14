@@ -249,7 +249,9 @@ do {
     check(parseConversion("```json\n{\"zh\": \"你好\", \"en\": \"Hello\"}\n```") == Conversion(en: "Hello", zh: "你好"), "容忍代码块包裹")
     check(parseConversion("好的：{\"en\":\"Hi\",\"zh\":\"嗨\"}") == Conversion(en: "Hi", zh: "嗨"), "容忍前后多余文字")
     check(parseConversion(#"{"en":"","zh":"你好"}"#) == nil && parseConversion("not json") == nil, "缺字段或非 JSON 返回 nil")
-    check(typingInstruction.contains("<text>") && typingInstruction.contains("\"en\"") && typingInstruction.contains("\"zh\""), "指令约定 JSON 字段 en / zh")
+    check(typingInstruction(.english).contains("<text>") && typingInstruction(.english).contains("\"en\"") && typingInstruction(.english).contains("\"zh\""), "指令约定 JSON 字段 en / zh")
+    check(typingInstruction(.japanese).contains("自然地道的日文") && translateInstruction(.japanese).contains("自然、地道的日文")
+          && sentenceInstruction(.japanese).contains("自然、地道的日文") && !translateInstruction(.japanese).contains("的英文"), "三条指令都按目标语言翻译")
 }
 
 // MARK: 输入法第一候选词 / 快速请求
@@ -277,7 +279,7 @@ do {
     let claude = Profile(name: "x", preset: "Anthropic", wire: .anthropic, baseURL: "https://api.anthropic.com", model: "m", instruction: "i", extraJSON: "")
     let cb = body(try fastRequest(claude, apiKey: "k", text: "t"))
     check(cb["max_tokens"] as? Int == 60 && cb["thinking"] == nil, "Anthropic：默认不思考，直接限长")
-    check(translateInstruction.contains("<text>") && !translateInstruction.contains("JSON"), "翻译指令只要译文，不要 JSON")
+    check(translateInstruction(.english).contains("<text>") && !translateInstruction(.english).contains("JSON"), "翻译指令只要译文，不要 JSON")
 }
 
 // MARK: ⌥P 润色也默认关闭思考（实测 deepseek-flash 首字 1243ms → 633ms）
@@ -421,13 +423,14 @@ do {
     check(spans("abc", ["x", ""], true).isEmpty, "找不到或空的不着色")
 
     let ds = Profile(name: "d", preset: "DeepSeek", wire: .openAI, baseURL: "https://api.deepseek.com", model: "deepseek-chat", instruction: "润色", extraJSON: "")
-    let sp = sentenceProfile(ds)
-    check(sp.instruction == sentenceInstruction, "整句用整句指令")
+    let sp = sentenceProfile(ds, .english)
+    check(sp.instruction == sentenceInstruction(.english), "整句用整句指令")
+    check(sentenceProfile(ds, .german).instruction.contains("德文"), "整句按目标语言出指令")
     if !fastOverrides(ds).isEmpty, fastOverrides(ds)["max_tokens"] != nil {
         check(body(try! fastRequest(sp, apiKey: "k", text: "你好"))["max_tokens"] as? Int == 400, "限长服务整句放宽到 400")
     }
     var mine = ds; mine.extraJSON = #"{"max_tokens":99}"#
-    check(body(try! fastRequest(sentenceProfile(mine), apiKey: "k", text: "x"))["max_tokens"] as? Int == 99, "用户自定义 max_tokens 优先")
+    check(body(try! fastRequest(sentenceProfile(mine, .english), apiKey: "k", text: "x"))["max_tokens"] as? Int == 99, "用户自定义 max_tokens 优先")
     check(chinesePunctuation[","] == "，" && chinesePunctuation["."] == "。", "中文标点映射")
 }
 

@@ -152,7 +152,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             fill.submenu!.addItem(ActionItem(m.rawValue, on: m == state.fillMode) { [weak self] in self?.state.fillMode = m })
         }
         menu.addItem(fill)
-        menu.addItem(ActionItem("输入时中英提示（⌥1 英文 / ⌥2 中文）", on: state.typingAssist) { [weak self] in
+        menu.addItem(ActionItem("输入时中英提示（⌥1 \(state.targetLanguage.rawValue) / ⌥2 中文）", on: state.typingAssist) { [weak self] in
             self?.state.typingAssist.toggle()
         })
         menu.addItem(ActionItem("设置…", key: ",") { [weak self] in self?.openSettings() })

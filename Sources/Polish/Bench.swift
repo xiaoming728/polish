@@ -22,9 +22,9 @@ enum Bench {
         print("配置：\(base.preset) / \(base.model)\n")
         let on = #"{"thinking":{"type":"enabled"}}"#
         let variants = [
-            Variant(name: "B0 改前：拼音→{en,zh}，思考开", instruction: typingInstruction, input: "nihaoshijie", extra: on),
-            Variant(name: "B1 拼音→{en,zh}，关思考 + 限长", instruction: typingInstruction, input: "nihaoshijie", extra: "", fast: true),
-            Variant(name: "B2 App 路径：候选词→英文，关思考 + 限长", instruction: translateInstruction, input: "你好世界", extra: "", fast: true),
+            Variant(name: "B0 改前：拼音→{en,zh}，思考开", instruction: typingInstruction(.english), input: "nihaoshijie", extra: on),
+            Variant(name: "B1 拼音→{en,zh}，关思考 + 限长", instruction: typingInstruction(.english), input: "nihaoshijie", extra: "", fast: true),
+            Variant(name: "B2 App 路径：候选词→英文，关思考 + 限长", instruction: translateInstruction(.english), input: "你好世界", extra: "", fast: true),
             Variant(name: "P0 ⌥P 润色改前：思考开", instruction: defaultInstruction, input: polishSample, extra: on),
             Variant(name: "P1 ⌥P 润色现在：默认关思考", instruction: defaultInstruction, input: polishSample, extra: ""),
         ]

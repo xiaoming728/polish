@@ -304,7 +304,7 @@ final class TypingAssist {
             return show()
         }
         let t0 = Date()
-        sentencePolisher.start(sentenceProfile(p), apiKey: key, text: s + tail, fast: true, onDelta: { _ in }, onDone: { [weak self] r in
+        sentencePolisher.start(sentenceProfile(p, state.targetLanguage), apiKey: key, text: s + tail, fast: true, onDelta: { _ in }, onDone: { [weak self] r in
             // 期间上屏了新内容、又敲键或换了候选：结果作废
             guard let self, self.sentence == s, (self.sentenceIncomplete && tail.isEmpty) || (self.buffer.text == pinyin && self.buffer.highlight == highlight), self.sentenceNeedsConversion == unresolved else { return }
             switch r {
@@ -432,7 +432,7 @@ final class TypingAssist {
         model.zh = candidate
         model.pairs = []
         // 本地词典收录的词直接出英文，不走网络、不需要 Key；短语和未收录的词再交给模型
-        if state.localDictionary, let c = candidate, let en = LocalDictionary.english(c) {
+        if state.localDictionary, state.targetLanguage == .english, let c = candidate, let en = LocalDictionary.english(c) {
             model.en = en
             model.error = nil
             show()
@@ -444,7 +444,7 @@ final class TypingAssist {
         show()
         if candidate != nil { registerKeys() }
         guard model.error == nil else { return }
-        p.instruction = candidate == nil ? typingInstruction : translateInstruction
+        p.instruction = candidate == nil ? typingInstruction(state.targetLanguage) : translateInstruction(state.targetLanguage)
         polisher.start(p, apiKey: key, text: candidate ?? pinyin, fast: true, onDelta: { _ in }, onDone: { [weak self] r in
             guard let self, self.buffer.text == pinyin, self.buffer.highlight == highlight else { return } // 期间又敲键或换了候选：结果作废
             switch r {
@@ -475,6 +475,7 @@ final class TypingAssist {
 
     private func show() {
         dismissal += 1 // 新结果出现时，旧淡出的完成回调不能隐藏它
+        model.language = state.targetLanguage
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0
             panel.animator().alphaValue = 1
@@ -540,6 +541,7 @@ final class HintModel: ObservableObject {
     @Published var error: String?
     @Published var notice: String?
     @Published var pairs: [SentencePair] = [] // 中英对应的词，同色显示
+    @Published var language = TargetLanguage.english
 }
 
 struct TypingHintView: View {
@@ -574,7 +576,7 @@ struct TypingHintView: View {
 
     func pending(_ key: String) -> some View {
         HStack(alignment: .top, spacing: 6) {
-            Text(model.notice == nil ? key : (key == "⌥1" ? "英文" : "中文")).font(.system(size: 11, weight: .medium, design: .rounded))
+            Text(model.notice == nil ? key : (key == "⌥1" ? model.language.rawValue : "中文")).font(.system(size: 11, weight: .medium, design: .rounded))
                 .padding(.horizontal, 5).padding(.vertical, 1)
                 .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
                 .fixedSize()
@@ -585,7 +587,7 @@ struct TypingHintView: View {
 
     func row(_ key: String, _ text: String, primary: Bool) -> some View {
         HStack(alignment: .top, spacing: 6) {
-            Text(model.notice == nil ? key : (key == "⌥1" ? "英文" : "中文")).font(.system(size: 11, weight: .medium, design: .rounded))
+            Text(model.notice == nil ? key : (key == "⌥1" ? model.language.rawValue : "中文")).font(.system(size: 11, weight: .medium, design: .rounded))
                 .padding(.horizontal, 5).padding(.vertical, 1)
                 .background(primary ? Color.accentColor.opacity(0.25) : Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
                 .fixedSize()
@@ -594,7 +596,7 @@ struct TypingHintView: View {
                     .font(.system(size: 13, weight: primary ? .semibold : .regular))
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
-                if primary {
+                if primary && model.language == .english {
                     Text(legend(text)).font(.system(size: 10)).lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -606,7 +608,7 @@ struct TypingHintView: View {
 
     private func colored(_ text: String, primary: Bool) -> AttributedString {
         var result = primary ? annotated(text) : AttributedString(text)
-        for word in colorRanges(text, model.pairs.map { primary ? $0.en : $0.zh }, wholeWords: primary) {
+        for word in colorRanges(text, model.pairs.map { primary ? $0.en : $0.zh }, wholeWords: primary && model.language.spaced) {
             if let range = Range(word.range, in: result) {
                 result[range].foregroundColor = Self.palette[word.index % Self.palette.count]
             }
@@ -633,6 +635,7 @@ struct TypingHintView: View {
 
     private func annotated(_ text: String) -> AttributedString {
         var result = AttributedString(text)
+        guard model.language == .english else { return result } // 词性标注只做英文
         for word in englishWordTags(text) {
             if let (_, color) = annotation(word.tag), let range = Range(word.range, in: result) {
                 result[range].foregroundColor = color
