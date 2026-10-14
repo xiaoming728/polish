@@ -444,7 +444,7 @@ do {
     check(TypingLanguage(rawValue: "pt")!.matches("portu") && TypingLanguage(rawValue: "pt")!.matches("葡萄") && TypingLanguage(rawValue: "pt")!.matches("PT")
           && !TypingLanguage(rawValue: "pt")!.matches("德"), "语言可按英文名、中文名、代码搜索")
     check(!TypingLanguage(rawValue: "th")!.spaced && TypingLanguage(rawValue: "pt")!.spaced, "无空格分词的语言不按整词着色")
-    check(reverseInstruction(from: .english, to: .japanese).contains("通常是英语") && reverseInstruction(from: .english, to: .japanese).contains("自然、地道的日语"), "反向指令从目标语言译成默认语言")
+    check(reverseInstruction(from: .english, to: .japanese).contains("任何其他语言") && reverseInstruction(from: .english, to: .japanese).contains("自然、地道的日语"), "反向指令从目标语言译成默认语言")
     if !fastOverrides(ds).isEmpty, fastOverrides(ds)["max_tokens"] != nil {
         check(body(try! fastRequest(sp, apiKey: "k", text: "你好"))["max_tokens"] as? Int == 400, "限长服务整句放宽到 400")
     }

@@ -501,19 +501,13 @@ final class TypingAssist {
         return langs.first?.hasPrefix("zh") == true
     }
 
-    private func keyboardLayoutActive() -> Bool {
-        guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
-              let typePtr = TISGetInputSourceProperty(src, kTISPropertyInputSourceType) else { return false }
-        return Unmanaged<CFString>.fromOpaque(typePtr).takeUnretainedValue() as String == kTISTypeKeyboardLayout as String
-    }
-
     private func secureFieldFocused() -> Bool {
         guard let el = Selection.focusedElement() else { return false }
         var v: CFTypeRef?
         return AXUIElementCopyAttributeValue(el, kAXSubroleAttribute as CFString, &v) == .success && v as? String == kAXSecureTextFieldSubrole as String
     }
 
-    // MARK: 反向提示：键盘布局下敲的外文译成默认语言
+    // MARK: 反向提示：非中文输入（键盘布局、输入法英文模式、其他语言输入法）译回默认语言
 
     /// 终端里键盘布局下敲的可能是命令或密码，不发给模型
     /// 终端里同样工作：密码提示时终端开启安全输入（Ghostty 自动，Terminal.app 需手动开「安全键盘输入」）则不处理
@@ -522,7 +516,7 @@ final class TypingAssist {
     }
 
     private func reverseActive() -> Bool {
-        reverseAllowed() && (direct || keyboardLayoutActive())
+        reverseAllowed() && (direct || !chineseInputActive()) // 键盘布局、其他语言的输入法都译回默认语言
     }
 
     /// 这次上屏键前没有候选窗：输入法处于英文模式，敲的字母直接上屏

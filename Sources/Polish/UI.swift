@@ -378,7 +378,7 @@ struct GeneralTab: View {
                     .disabled(!state.typingAssist)
                 LanguagePicker(title: "默认语言", selection: $state.nativeLanguage, followSystem: "跟随系统（\(TypingLanguage.system().name)）")
                     .disabled(!state.typingAssist)
-                Toggle("在键盘布局（ABC 等）下输入时，提示译成\(state.native.name)，⌥1 替换（会把敲的文字发给模型；终端、密码框中不工作）", isOn: $state.reverseTyping)
+                Toggle("用英文或其他语言输入时（ABC 等键盘布局、输入法的英文模式、其他语言输入法），提示译回\(state.native.name)，⌥1 替换（会把敲的文字发给模型；密码框与安全输入时不工作）", isOn: $state.reverseTyping)
                     .disabled(!state.typingAssist)
                 Toggle("英文优先查 macOS 本地词典（牛津英汉汉英词典，离线、即时；短语和查不到的词再问模型）", isOn: $state.localDictionary)
                     .disabled(!state.typingAssist || state.targetLanguage != .english)
