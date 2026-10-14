@@ -162,7 +162,48 @@ func roundFollow(_ pinyin: String) {
     check(added.trimmingCharacters(in: .newlines) == expected, "「\(pinyin)」→→ ⌥2：上屏的是第 3 个候选", "\(added.debugDescription) 期望 \(expected.debugDescription)")
 }
 
+func type(_ s: String) { for c in s { key(c == " " ? kVK_Space : codes[c]!) } }
+
+/// 句中 ⌥1：光标前与本句一致 → 删掉本句和拼音换成译文，本句之前的文字一个不少
+func roundSentence() {
+    let before = documentText()
+    type("shijie ")
+    let mark = logLines().count
+    type("nihao")
+    let result = waitLog(after: mark, contains: "typing sentence len=", timeout: 15)
+    check(result?.contains("ok=true") == true, "句中「世界 + nihao」：出整句结果", result ?? "（15 秒内没有结果）")
+    key(kVK_ANSI_1, .maskAlternate)
+    usleep(1_500_000)
+    let after = documentText()
+    let added = String(after.dropFirst(before.count))
+    check(after.hasPrefix(before) && !after.contains("世界") && !after.contains("nihao") && !added.isEmpty && added.unicodeScalars.allSatisfy(\.isASCII),
+          "句中 ⌥1：本句换成英文，前文保留", after.debugDescription)
+}
+
+/// 输入框被键盘以外的方式改过（本句记录与实际不符）：⌥1 一个字都不删，结果只进剪贴板
+func roundMismatch() {
+    type("shijie ")
+    _ = osa("tell application \"TextEdit\" to set text of document 1 to (text of document 1) & \"改\"")
+    usleep(300_000)
+    let before = documentText()
+    let mark = logLines().count
+    type("nihao")
+    guard waitLog(after: mark, contains: "typing sentence len=", timeout: 15) != nil else { return check(false, "不一致：整句结果没出来") }
+    key(kVK_ANSI_1, .maskAlternate)
+    let copied = waitLog(after: mark, contains: "copied only", timeout: 3)
+    usleep(500_000)
+    let after = documentText()
+    check(copied != nil && after.hasPrefix(before), "不一致 ⌥1：不删任何字，提示已复制", after.debugDescription)
+    let clip = NSPasteboard.general.string(forType: .string) ?? ""
+    check(!clip.isEmpty && clip.unicodeScalars.allSatisfy(\.isASCII), "不一致 ⌥1：译文在剪贴板", clip.debugDescription)
+    key(kVK_Escape) // 撤销留在组合态的拼音
+}
+
 round("nihao", english: true)
+key(kVK_Return)
+roundSentence()
+key(kVK_Return)
+roundMismatch()
 key(kVK_Return)
 round("shijie", english: false)
 key(kVK_Return)
