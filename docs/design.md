@@ -10,6 +10,7 @@
 - 菜单栏常驻（无 Dock 图标），全局快捷键默认 ⌥P，可以录制修改。
 - GUI 应用：读选区 → 流式润色 → 按回填方式（预览 / 自动替换 / 小提示确认）写回。
 - 终端（Terminal.app、Ghostty、iTerm2）：发送 Ctrl+G，由 `polish-edit` 接管整段草稿 → 润色 → 写回输入框，不自动执行或发送。zsh、Claude Code、Codex 均可用。
+  - 2026-10-14 用户要求支持所有终端 Agent：不再按程序设 alias，改为在 zsh 中全局导出 `VISUAL`/`EDITOR`=polish-edit，原编辑器存入 `POLISH_FALLBACK_EDITOR`（未待命时转交它，且跳过指向自己的值）。各家唤起外部编辑器的按键不同，做成设置项：Ctrl+G（zsh、Claude Code、Codex）/ Ctrl+X Ctrl+E（zsh、Claude Code、Aider）/ Ctrl+X（Gemini CLI、Qwen Code）/ Ctrl+X E（OpenCode）。识别的终端扩展到 kitty、WezTerm、Alacritty、Warp、Hyper、Tabby、Rio（均未实测）。
 - 多套配置（服务商 + Base URL + 模型 + 润色指令 + 额外请求体 JSON），API Key 存在本地文件（见第 6 节）。
 - 默认带 6 个场景（⌘1–6）：默认润色、精简、结构化、仅纠错、译成英文、译成中文。不收「扩写 / 补充细节」，因为会凭空添加需求。老用户首次升级时补齐一次，沿用第一套配置的服务连接。
 - 两种协议：OpenAI 兼容（Chat Completions）、Anthropic Messages。附带常见厂商预设。

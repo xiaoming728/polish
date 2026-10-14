@@ -4,7 +4,10 @@ import Combine
 import PolishCore
 import SwiftUI
 
-let terminalBundleIDs: Set<String> = ["com.apple.Terminal", "com.mitchellh.ghostty", "com.googlecode.iterm2"]
+let terminalBundleIDs: Set<String> = [
+    "com.apple.Terminal", "com.mitchellh.ghostty", "com.googlecode.iterm2", "net.kovidgoyal.kitty", "com.github.wez.wezterm",
+    "org.alacritty", "dev.warp.Warp-Stable", "co.zeit.hyper", "org.tabby", "com.raphaelamorim.rio",
+]
 
 final class KeyPanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -204,7 +207,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if terminalBundleIDs.contains(front.bundleIdentifier ?? "") {
             state.target = "\(front.localizedName ?? "终端") · 输入框"
             server.arm()
-            Keys.ctrlG()
+            Keys.send(state.terminalKey)
         } else {
             capturing = true
             Task {

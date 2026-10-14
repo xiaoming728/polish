@@ -44,8 +44,8 @@ public struct FrameReader {
     }
 }
 
-/// 未被 app 接手时交给原编辑器：POLISH_FALLBACK_EDITOR → 非 polish-edit 的 VISUAL → EDITOR → vi
+/// 未被 app 接手时交给原编辑器：POLISH_FALLBACK_EDITOR → VISUAL → EDITOR → vi，跳过指向 polish-edit 自己的值
 public func fallbackEditor(env: [String: String]) -> String {
-    let visual = env["VISUAL"].flatMap { $0.contains("polish-edit") ? nil : $0 }
-    return [env["POLISH_FALLBACK_EDITOR"], visual, env["EDITOR"]].compactMap { $0 }.first { !$0.isEmpty } ?? "vi"
+    [env["POLISH_FALLBACK_EDITOR"], env["VISUAL"], env["EDITOR"]].compactMap { $0 }
+        .first { !$0.isEmpty && !$0.contains("polish-edit") } ?? "vi"
 }

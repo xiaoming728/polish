@@ -135,7 +135,7 @@ struct SettingsView: View {
         TabView {
             ProfilesTab(state: state).tabItem { Label("配置", systemImage: "slider.horizontal.3") }
             GeneralTab(state: state, rebind: rebind).tabItem { Label("通用", systemImage: "gearshape") }
-            TerminalTab().tabItem { Label("终端集成", systemImage: "terminal") }
+            TerminalTab(state: state).tabItem { Label("终端集成", systemImage: "terminal") }
             PermissionTab().tabItem { Label("权限与隐私", systemImage: "lock.shield") }
         }
         .padding()
@@ -370,6 +370,8 @@ enum ZshRc {
 
 struct SnippetBox: View {
     let title: String, id: String, code: String
+    /// 安装时一并清掉的旧版片段 id
+    var replaces: [String] = []
     @Binding var rc: String
     @Binding var message: String?
     @State var copied = false
@@ -396,7 +398,10 @@ struct SnippetBox: View {
                     Button("卸载") { apply(RcBlock.remove(rc, id: id), done: "已从 ~/.zshrc 移除「\(title)」") }
                 }
                 if !installed || stale {
-                    Button(stale ? "更新" : "安装") { apply(RcBlock.install(rc, id: id, body: code), done: "已写入 ~/.zshrc：「\(title)」") }
+                    Button(stale ? "更新" : "安装") {
+                        let clean = replaces.reduce(rc) { RcBlock.remove($0, id: $1) }
+                        apply(RcBlock.install(clean, id: id, body: code), done: "已写入 ~/.zshrc：「\(title)」")
+                    }
                         .buttonStyle(.borderedProminent)
                 }
             }
@@ -410,7 +415,7 @@ struct SnippetBox: View {
         do {
             try ZshRc.write(new)
             rc = ZshRc.read()
-            message = done + "。新开的终端窗口生效（已打开的窗口执行 source ~/.zshrc）；已在运行的 claude / codex 要退出后重新启动。改动前的内容备份在 ~/.zshrc.polish-backup。"
+            message = done + "。新开的终端窗口生效（已打开的窗口执行 source ~/.zshrc）；已在运行的 Agent 要退出后重新启动。改动前的内容备份在 ~/.zshrc.polish-backup。"
         } catch {
             message = "写入 ~/.zshrc 失败：\(error.localizedDescription)"
         }
@@ -418,6 +423,7 @@ struct SnippetBox: View {
 }
 
 struct TerminalTab: View {
+    @ObservedObject var state: AppState
     @State var rc = ZshRc.read()
     @State var message: String?
 
@@ -429,33 +435,50 @@ struct TerminalTab: View {
 
     var zsh: String {
         """
-        # Polish：zsh 输入行按 Ctrl+G 交给 polish-edit（放在 bindkey -v / -e 之后）
+        # Polish：zsh 输入行按 Ctrl+G 或 Ctrl+X Ctrl+E 交给 polish-edit（放在 bindkey -v / -e 之后）
         autoload -Uz edit-command-line
         zle -N polish-edit-command-line edit-command-line
         zstyle ':zle:polish-edit-command-line' editor \(editor)
         bindkey -M emacs '^G' polish-edit-command-line
         bindkey -M viins '^G' polish-edit-command-line
         bindkey -M vicmd '^G' polish-edit-command-line
+        bindkey -M emacs '^X^E' polish-edit-command-line
+        bindkey -M viins '^X^E' polish-edit-command-line
         """
     }
 
-    func alias(_ cli: String) -> String {
-        "alias \(cli)='POLISH_FALLBACK_EDITOR=\"${VISUAL:-$EDITOR}\" VISUAL=\(editor) \(cli)'"
+    /// 所有按 $VISUAL / $EDITOR 唤起外部编辑器的程序都走 polish-edit；不是 Polish 触发的照常转交原编辑器。
+    /// 嵌套 shell 继承到的已是 polish-edit 时不覆盖 POLISH_FALLBACK_EDITOR，免得转交给自己
+    var agents: String {
+        """
+        # Polish：终端里的 Agent（Claude Code、Codex、Gemini CLI、OpenCode、Aider…）唤起外部编辑器时交给 polish-edit；
+        # 不是 Polish 触发的（如自己运行 git commit）照常打开原来的编辑器
+        [[ "${VISUAL:-$EDITOR}" == *polish-edit* ]] || export POLISH_FALLBACK_EDITOR="${VISUAL:-$EDITOR}"
+        export VISUAL=\(editor) EDITOR=\(editor)
+        """
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("在终端（Terminal、Ghostty、iTerm2）中按快捷键时，Polish 会发送 Ctrl+G，由 polish-edit 接管整段草稿；确认后写回输入框，不会自动执行或发送。点「安装」把对应片段写到 ~/.zshrc 末尾（带 Polish 标记，「卸载」只删这一段），然后重开终端。")
+                Text("在终端（Terminal、Ghostty、iTerm2、kitty、WezTerm、Alacritty、Warp 等）中按快捷键时，Polish 会给当前程序发送下面选定的按键，让它用外部编辑器打开草稿，由 polish-edit 接管；确认后写回输入框，不会自动执行或发送。点「安装」把对应片段写到 ~/.zshrc 末尾（带 Polish 标记，「卸载」只删这一段），然后重开终端。")
                     .fixedSize(horizontal: false, vertical: true)
+                Picker("终端中发送的按键", selection: $state.terminalKey) {
+                    ForEach(TerminalKey.allCases, id: \.self) { k in
+                        Text("\(k.rawValue)　\(k.detail)").tag(k)
+                    }
+                }
                 if let message {
                     Text(message).font(.caption).foregroundStyle(message.hasPrefix("写入") ? .red : .secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 SnippetBox(title: "zsh 输入行", id: "zsh", code: zsh, rc: $rc, message: $message)
-                SnippetBox(title: "Claude Code", id: "claude", code: alias("claude"), rc: $rc, message: $message)
-                SnippetBox(title: "Codex", id: "codex", code: alias("codex"), rc: $rc, message: $message)
-                Label("Claude Code / Codex 只在启动时读取编辑器设置：安装前就在运行的会话，按快捷键会打开 vi。退出后在新终端窗口重新启动即可。", systemImage: "exclamationmark.triangle")
+                SnippetBox(title: "终端 Agent 与其他程序", id: "agents", code: agents, replaces: ["claude", "codex"], rc: $rc, message: $message)
+                if RcBlock.has(rc, id: "claude") || RcBlock.has(rc, id: "codex") {
+                    Label("检测到旧版的 Claude Code / Codex 单独片段，安装上面这一项时会自动替换掉。", systemImage: "info.circle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                Label("Agent 只在启动时读取编辑器设置：安装前就在运行的会话，按快捷键会打开 vi 等原编辑器。退出后在新终端窗口重新启动即可。", systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange)
                 Label("bash 不支持：Ctrl+X Ctrl+E 编辑后会直接执行命令。bash 中改为润色终端选区后复制。", systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary)

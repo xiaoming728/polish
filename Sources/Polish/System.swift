@@ -76,7 +76,14 @@ enum Keys {
     }
     static func copy() { post(kVK_ANSI_C, .maskCommand) }
     static func paste() { post(kVK_ANSI_V, .maskCommand) }
-    static func ctrlG() { post(kVK_ANSI_G, .maskControl) }
+    static func send(_ k: TerminalKey) {
+        switch k {
+        case .ctrlG: post(kVK_ANSI_G, .maskControl)
+        case .ctrlX: post(kVK_ANSI_X, .maskControl)
+        case .ctrlXCtrlE: post(kVK_ANSI_X, .maskControl); post(kVK_ANSI_E, .maskControl)
+        case .ctrlXE: post(kVK_ANSI_X, .maskControl); post(kVK_ANSI_E, [])
+        }
+    }
 }
 
 // MARK: - 剪贴板快照

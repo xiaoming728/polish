@@ -15,6 +15,23 @@ enum FillMode: String, Codable, CaseIterable {
     }
 }
 
+/// 终端里按快捷键时投递给前台程序的「用外部编辑器编辑」按键；各家 Agent 不同，用户按常用的选
+enum TerminalKey: String, CaseIterable {
+    case ctrlG = "Ctrl+G"
+    case ctrlXCtrlE = "Ctrl+X Ctrl+E"
+    case ctrlX = "Ctrl+X"
+    case ctrlXE = "Ctrl+X E"
+
+    var detail: String {
+        switch self {
+        case .ctrlG: return "zsh 输入行、Claude Code、Codex"
+        case .ctrlXCtrlE: return "zsh 输入行、Claude Code、Aider 等 readline / prompt_toolkit 类"
+        case .ctrlX: return "Gemini CLI、Qwen Code 等 Gemini 系（zsh 输入行不可用）"
+        case .ctrlXE: return "OpenCode（zsh 输入行不可用）"
+        }
+    }
+}
+
 enum Phase: Equatable {
     case streaming, done
     case failed(String)
@@ -34,6 +51,7 @@ final class AppState: ObservableObject {
     @Published var typingAssist: Bool { didSet { save() } }
     /// 输入提示的英文先查 macOS 本地词典，查不到再问模型
     @Published var localDictionary: Bool { didSet { save() } }
+    @Published var terminalKey: TerminalKey { didSet { save() } }
 
     @Published var source = ""
     @Published var output = ""
@@ -57,6 +75,7 @@ final class AppState: ObservableObject {
         hotKey = defaults.data(forKey: "hotKey").flatMap { try? dec.decode(HotKeySpec.self, from: $0) } ?? .standard
         typingAssist = defaults.object(forKey: "typingAssist") as? Bool ?? true
         localDictionary = defaults.object(forKey: "localDictionary") as? Bool ?? true
+        terminalKey = defaults.string(forKey: "terminalKey").flatMap(TerminalKey.init) ?? .ctrlG
         save() // init 中赋值不触发 didSet，补齐的场景要显式保存
     }
 
@@ -68,5 +87,6 @@ final class AppState: ObservableObject {
         defaults.set(try? enc.encode(hotKey), forKey: "hotKey")
         defaults.set(typingAssist, forKey: "typingAssist")
         defaults.set(localDictionary, forKey: "localDictionary")
+        defaults.set(terminalKey.rawValue, forKey: "terminalKey")
     }
 }

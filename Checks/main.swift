@@ -187,6 +187,9 @@ do {
     check(fallbackEditor(env: ["POLISH_FALLBACK_EDITOR": "", "VISUAL": "code -w", "EDITOR": "vim"]) == "code -w", "空值跳过，取 VISUAL")
     check(fallbackEditor(env: ["VISUAL": "/Applications/Polish.app/Contents/MacOS/polish-edit", "EDITOR": "vim"]) == "vim", "VISUAL 指向 polish-edit 时跳过")
     check(fallbackEditor(env: [:]) == "vi", "都没有时用 vi")
+    let pe = "/Applications/Polish.app/Contents/MacOS/polish-edit"
+    check(fallbackEditor(env: ["POLISH_FALLBACK_EDITOR": "", "VISUAL": pe, "EDITOR": pe]) == "vi", "全局接管后 VISUAL、EDITOR 都指向 polish-edit：不能转交给自己")
+    check(fallbackEditor(env: ["POLISH_FALLBACK_EDITOR": pe, "EDITOR": "nano"]) == "nano", "嵌套 shell 把 polish-edit 记成原编辑器时也跳过")
 }
 
 // MARK: 结果整理
