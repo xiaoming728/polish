@@ -66,6 +66,11 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
         NSApp.mainMenu = editMenu()
         panel.contentView = NSHostingView(rootView: PanelView(state: state))
+        for w in [panel, toast] {
+            NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: w, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.lostFocus() }
+            }
+        }
 
         HotKey.handler = { [weak self] in self?.trigger() }
         HotKey.install()
@@ -367,6 +372,18 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func endSession() {
         origin = nil
         hidePanel()
+    }
+
+    /// 面板 / 待确认提示失焦（用户点了别处）：等同放弃，但不恢复光标——用户点的位置就是新光标
+    func lostFocus() {
+        DispatchQueue.main.async { [self] in // 回填流程会先自己隐藏面板，等它走完再判断是否真失焦
+            let open = (panel.isVisible && !panel.isKeyWindow) || (toastConfirm && toast.isVisible && !toast.isKeyWindow)
+            guard open, !panel.isKeyWindow, !toast.isKeyWindow else { return }
+            polisher.cancel()
+            if case .terminal? = origin { server.reply(.cancel) }
+            endSession()
+            hideToast()
+        }
     }
 
     func switchProfile(_ i: Int) {

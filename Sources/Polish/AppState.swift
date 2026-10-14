@@ -32,6 +32,8 @@ final class AppState: ObservableObject {
     @Published var hotKey: HotKeySpec { didSet { save() } }
     /// 输入时中英提示（中文输入法下敲拼音时显示 ⌥1 英文 / ⌥2 中文）
     @Published var typingAssist: Bool { didSet { save() } }
+    /// 输入提示的英文先查 macOS 本地词典，查不到再问模型
+    @Published var localDictionary: Bool { didSet { save() } }
 
     @Published var source = ""
     @Published var output = ""
@@ -54,6 +56,7 @@ final class AppState: ObservableObject {
         fillMode = defaults.string(forKey: "fillMode").flatMap(FillMode.init) ?? .preview
         hotKey = defaults.data(forKey: "hotKey").flatMap { try? dec.decode(HotKeySpec.self, from: $0) } ?? .standard
         typingAssist = defaults.object(forKey: "typingAssist") as? Bool ?? true
+        localDictionary = defaults.object(forKey: "localDictionary") as? Bool ?? true
         save() // init 中赋值不触发 didSet，补齐的场景要显式保存
     }
 
@@ -64,5 +67,6 @@ final class AppState: ObservableObject {
         defaults.set(fillMode.rawValue, forKey: "fillMode")
         defaults.set(try? enc.encode(hotKey), forKey: "hotKey")
         defaults.set(typingAssist, forKey: "typingAssist")
+        defaults.set(localDictionary, forKey: "localDictionary")
     }
 }

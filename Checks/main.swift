@@ -315,5 +315,49 @@ do {
     check(b.text.isEmpty && b.highlight == 0, "其他键结束输入")
 }
 
+// MARK: macOS 本地词典（牛津英汉汉英词典）释义取首个英文义项；样例为真实 DCSCopyTextDefinition 输出
+
+do {
+    let cases: [(String, String?)] = [
+        ("电脑 diànnǎo noun computer▸ 个人电脑 personal computer (PC) ▸ 电脑程序 computer program", "computer"),
+        ("苹果 pínɡɡuǒ noun apple ", "apple"),
+        ("中国 Zhōnɡɡuó noun China▸ 中国人 Chinese", "China"),
+        ("世界 shìjiè noun ① （一切事物） world▸ 创造新世界 create a new world ② ［Buddhism］ universe", "world"),
+        ("我 wǒ pronoun ① （指一人） （用作主语） I; （用作宾语） me; （表所属关系） my▸ 告诉我 tell me", "I"),
+        ("好 hǎo A. adjective ① （令人满意） good▸ 好地方 nice place", "good"),
+        ("再见 zàijiàn verb polite expression goodbye ", "goodbye"),
+        ("输入法 shūrùfǎ noun ［Computing］ input method ", "input method"),
+        ("人工智能 rénɡōnɡ zhìnénɡ noun ［Computing］ artificial intelligence (AI)▸ 人工智能语言 artificial intelligence language", "artificial intelligence"),
+        ("因为 yīnwèi A. preposition because of▸ 他因为… B. conjunction because▸", "because of"),
+        ("一下 yīxià A. numeral-classifier compound [used after a verb as its complement, indicating an act or an attempt] once▸ 看一下 have a look", "once"),
+        ("是 shì A. pronoun ① literary （这） this, that▸ 是日 that day", "this"),
+        ("学习 xuéxí verb ① （获取知识技能） study▸ 学习文化 learn to read and write", "study"),
+        ("世界 shìjiè ①名 佛教指无限的时间和空间。大千世界", nil),
+        ("", nil),
+    ]
+    for (def, want) in cases {
+        check(dictionaryGloss(def) == want, "词典释义 → \(want ?? "nil")（实际 \(dictionaryGloss(def) ?? "nil")）")
+    }
+}
+
+// MARK: 终端一键安装 / 卸载：~/.zshrc 中的标记块
+
+do {
+    let user = "export PATH=/x:$PATH\nalias ll='ls -l'\n"
+    let a = RcBlock.install(user, id: "zsh", body: "bindkey A")
+    check(a.hasPrefix(user) && RcBlock.has(a, id: "zsh") && a.contains("bindkey A"), "安装：追加到末尾，原内容不动")
+    check(RcBlock.remove(a, id: "zsh") == user, "卸载：恢复成安装前一字不差")
+    let b = RcBlock.install(a, id: "claude", body: "alias claude=x")
+    check(RcBlock.remove(RcBlock.remove(b, id: "zsh"), id: "claude") == user, "多块各自卸载，互不影响")
+    check(RcBlock.has(RcBlock.remove(b, id: "zsh"), id: "claude"), "卸 zsh 不碰 claude 块")
+    let re = RcBlock.install(b, id: "zsh", body: "bindkey B")
+    check(!re.contains("bindkey A") && re.contains("bindkey B") && re.components(separatedBy: "# >>> polish zsh >>>").count == 2, "重复安装：替换旧块（如 app 换了位置），不重复追加")
+    check(RcBlock.install("", id: "zsh", body: "x") == "# >>> polish zsh >>>\nx\n# <<< polish zsh <<<\n", "空文件也能装")
+    check(RcBlock.install("abc", id: "zsh", body: "x").hasPrefix("abc\n\n# >>>"), "原文件末尾没换行时补上")
+    let broken = user + "# >>> polish zsh >>>\nmine\n"
+    check(RcBlock.remove(broken, id: "zsh") == broken && !RcBlock.has(broken, id: "zsh"), "只有开始标记（被手改坏）：不删任何内容")
+    check(RcBlock.remove(user, id: "zsh") == user, "没装过时卸载：原样")
+}
+
 print(failures == 0 ? "\n全部通过" : "\n\(failures) 项失败")
 exit(failures == 0 ? 0 : 1)

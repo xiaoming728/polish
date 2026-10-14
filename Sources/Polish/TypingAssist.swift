@@ -199,6 +199,15 @@ final class TypingAssist {
         model.pinyin = pinyin
         model.en = nil
         model.zh = candidate
+        // 本地词典收录的词直接出英文，不走网络、不需要 Key；短语和未收录的词再交给模型
+        if state.localDictionary, let c = candidate, let en = LocalDictionary.english(c) {
+            model.en = en
+            model.error = nil
+            show()
+            registerKeys()
+            Log.write("typing dictionary hit ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
+            return
+        }
         model.error = key.isEmpty && !["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "") ? "未配置 API Key（⌥P 菜单 → 设置）" : nil
         show()
         if candidate != nil { registerKeys() }

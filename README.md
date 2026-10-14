@@ -17,7 +17,7 @@ open /Applications/Polish.app
 
 1. **授予辅助功能权限**：系统设置 → 隐私与安全性 → 辅助功能 → 打开 Polish。每次重新构建后，都要先移除旧条目再重新添加，因为 ad-hoc 签名的身份会变。
 2. **填写配置**：菜单栏魔杖图标 → 设置… → 配置：选服务商，填 API Key（存在本机 `~/Library/Application Support/Polish/keys.json`，仅你的账号可读）和模型，然后点「测试连接」。
-3. **终端集成（可选）**：设置 → 终端集成，把 zsh 片段和 alias 复制到 `~/.zshrc`，然后重开终端。
+3. **终端集成（可选）**：设置 → 终端集成，对 zsh 输入行 / Claude Code / Codex 分别点「安装」（写入 `~/.zshrc` 末尾带标记的一段，「卸载」只删这一段，改动前备份到 `~/.zshrc.polish-backup`），然后重开终端。
 
 ## 使用
 

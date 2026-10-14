@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import CoreServices
 import PolishCore
 
 // MARK: - 全局快捷键（Carbon，无需权限）
@@ -435,5 +436,28 @@ enum IME {
         }
         for w in windows { walk(w, 0) }
         return candidateList(texts)
+    }
+}
+
+// MARK: - macOS 本地词典（词典 App 自带的「牛津英汉汉英词典」）
+
+enum LocalDictionary {
+    private typealias CopyAll = @convention(c) () -> Unmanaged<CFSet>?
+    private typealias GetName = @convention(c) (DCSDictionary) -> Unmanaged<CFString>?
+
+    /// 只查汉英词典：默认查询会先命中汉语词典（中文释义）。枚举词典是私有 API，按符号动态取，取不到就当没有词典
+    private static let dict: DCSDictionary? = {
+        let h = dlopen(nil, RTLD_NOW)
+        guard let all = dlsym(h, "DCSCopyAvailableDictionaries"), let short = dlsym(h, "DCSDictionaryGetShortName") else { return nil }
+        let set = unsafeBitCast(all, to: CopyAll.self)()?.takeRetainedValue() as NSSet? ?? []
+        let name = unsafeBitCast(short, to: GetName.self)
+        return set.first { (name($0 as! DCSDictionary)?.takeUnretainedValue() as String?) == "Simplified Chinese - English" } as! DCSDictionary?
+    }()
+
+    /// 词的第一个英文义项；短语、未收录或没装该词典时返回 nil（实测单词 1–2ms）
+    static func english(_ word: String) -> String? {
+        guard let dict else { return nil }
+        let def = DCSCopyTextDefinition(dict, word as CFString, CFRange(location: 0, length: (word as NSString).length))?.takeRetainedValue() as String?
+        return def.flatMap(dictionaryGloss)
     }
 }

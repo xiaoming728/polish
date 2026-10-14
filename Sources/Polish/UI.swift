@@ -47,10 +47,14 @@ struct PanelView: View {
                     .textSelection(.enabled)
             }
             if !state.output.isEmpty || state.phase == .streaming {
-                ScrollView {
-                    Text(state.output + (state.phase == .streaming ? "▍" : ""))
-                        .font(.system(size: 13)).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Text(state.output + (state.phase == .streaming ? "▍" : ""))
+                            .font(.system(size: 13)).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Color.clear.frame(height: 1).id("end")
+                    }
+                    .onChange(of: state.output) { proxy.scrollTo("end", anchor: .bottom) } // 流式输出时始终跟到最新一行
                 }
             }
             Spacer(minLength: 0)
@@ -310,6 +314,8 @@ struct GeneralTab: View {
             }
             Section("输入时中英提示") {
                 Toggle("中文输入法下敲拼音时，在光标上方显示 ⌥1 英文 / ⌥2 中文", isOn: $state.typingAssist)
+                Toggle("英文优先查 macOS 本地词典（牛津英汉汉英词典，离线、即时；短语和查不到的词再问模型）", isOn: $state.localDictionary)
+                    .disabled(!state.typingAssist)
                 Text("停顿约 0.25 秒后，把正在输入的拼音发给当前配置的模型换算；按 ⌥1 / ⌥2 用所选内容替换刚敲的拼音。只在中文输入法激活时工作；密码框、安全输入和终端中不工作。需要「输入监控」权限。替换时按敲过的键数退格撤销拼音：个别输入法若在组合态吞掉按键，可能多删光标前的字，可用 ⌘Z 撤销。")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -334,18 +340,53 @@ struct GeneralTab: View {
     }
 }
 
+/// ~/.zshrc 的读写；.zshrc 是符号链接（dotfiles 仓库）时改链接指向的文件，不把链接换成普通文件
+enum ZshRc {
+    static var url: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".zshrc").resolvingSymlinksInPath()
+    }
+    static func read() -> String { (try? String(contentsOf: url, encoding: .utf8)) ?? "" }
+
+    /// 每次改动前把改动前的内容备份到 ~/.zshrc.polish-backup
+    static func write(_ s: String) throws {
+        let old = read()
+        guard s != old else { return }
+        let backup = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".zshrc.polish-backup")
+        if FileManager.default.fileExists(atPath: url.path) { try old.write(to: backup, atomically: true, encoding: .utf8) }
+        try s.write(to: url, atomically: true, encoding: .utf8)
+    }
+}
+
 struct SnippetBox: View {
-    let title: String, code: String
+    let title: String, id: String, code: String
+    @Binding var rc: String
+    @Binding var message: String?
     @State var copied = false
+
+    var installed: Bool { RcBlock.has(rc, id: id) }
+    /// 装过但内容与当前不同（如 Polish.app 换了位置）
+    var stale: Bool { installed && RcBlock.install(rc, id: id, body: code) != rc }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title).font(.headline)
+                if installed {
+                    Label(stale ? "已安装（需更新）" : "已安装", systemImage: stale ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                        .font(.caption).foregroundStyle(stale ? .orange : .green)
+                }
                 Spacer()
                 Button(copied ? "已复制 ✓" : "复制") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(code, forType: .string)
                     copied = true
+                }
+                if installed {
+                    Button("卸载") { apply(RcBlock.remove(rc, id: id), done: "已从 ~/.zshrc 移除「\(title)」") }
+                }
+                if !installed || stale {
+                    Button(stale ? "更新" : "安装") { apply(RcBlock.install(rc, id: id, body: code), done: "已写入 ~/.zshrc：「\(title)」") }
+                        .buttonStyle(.borderedProminent)
                 }
             }
             Text(code).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
@@ -353,9 +394,22 @@ struct SnippetBox: View {
                 .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
         }
     }
+
+    private func apply(_ new: String, done: String) {
+        do {
+            try ZshRc.write(new)
+            rc = ZshRc.read()
+            message = done + "。新开的终端窗口生效（已打开的窗口执行 source ~/.zshrc）；改动前的内容备份在 ~/.zshrc.polish-backup。"
+        } catch {
+            message = "写入 ~/.zshrc 失败：\(error.localizedDescription)"
+        }
+    }
 }
 
 struct TerminalTab: View {
+    @State var rc = ZshRc.read()
+    @State var message: String?
+
     /// 取当前 .app 的实际位置；路径含空格时用单引号包住
     var editor: String {
         let path = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/polish-edit").path
@@ -374,28 +428,31 @@ struct TerminalTab: View {
         """
     }
 
-    var aliases: String {
-        """
-        alias claude='POLISH_FALLBACK_EDITOR="${VISUAL:-$EDITOR}" VISUAL=\(editor) claude'
-        alias codex='POLISH_FALLBACK_EDITOR="${VISUAL:-$EDITOR}" VISUAL=\(editor) codex'
-        """
+    func alias(_ cli: String) -> String {
+        "alias \(cli)='POLISH_FALLBACK_EDITOR=\"${VISUAL:-$EDITOR}\" VISUAL=\(editor) \(cli)'"
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("在终端（Terminal、Ghostty、iTerm2）中按快捷键时，Polish 会发送 Ctrl+G，由 polish-edit 接管整段草稿；确认后写回输入框，不会自动执行或发送。请把下面两段加到 ~/.zshrc 末尾，然后重开终端。")
+                Text("在终端（Terminal、Ghostty、iTerm2）中按快捷键时，Polish 会发送 Ctrl+G，由 polish-edit 接管整段草稿；确认后写回输入框，不会自动执行或发送。点「安装」把对应片段写到 ~/.zshrc 末尾（带 Polish 标记，「卸载」只删这一段），然后重开终端。")
                     .fixedSize(horizontal: false, vertical: true)
-                SnippetBox(title: "1. zsh 输入行", code: zsh)
-                SnippetBox(title: "2. Claude Code / Codex", code: aliases)
+                if let message {
+                    Text(message).font(.caption).foregroundStyle(message.hasPrefix("写入") ? .red : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                SnippetBox(title: "zsh 输入行", id: "zsh", code: zsh, rc: $rc, message: $message)
+                SnippetBox(title: "Claude Code", id: "claude", code: alias("claude"), rc: $rc, message: $message)
+                SnippetBox(title: "Codex", id: "codex", code: alias("codex"), rc: $rc, message: $message)
                 Label("bash 不支持：Ctrl+X Ctrl+E 编辑后会直接执行命令。bash 中改为润色终端选区后复制。", systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary)
                 Label("ssh 到远程或未配置的 zsh 中，Ctrl+G 会清空当前行；执行 print -z -- $ZLE_LINE_ABORTED 可恢复。", systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.secondary)
-                Label("移动 Polish.app 后需要重新复制上面的片段。", systemImage: "arrow.triangle.2.circlepath")
+                Label("移动 Polish.app 后，已安装的片段会显示「需更新」，点一下即可。", systemImage: "arrow.triangle.2.circlepath")
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(4)
         }
+        .onAppear { rc = ZshRc.read() } // 用户可能在外面手改过
     }
 }
 

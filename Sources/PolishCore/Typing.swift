@@ -96,3 +96,25 @@ public func fastRequest(_ p: Profile, apiKey: String, text: String) throws -> UR
     q.extraJSON = String(decoding: try JSONSerialization.data(withJSONObject: merged), as: UTF8.self)
     return try makeRequest(q, apiKey: apiKey, text: text)
 }
+
+/// 从 macOS「牛津英汉汉英词典」的纯文本释义里取第一个英文义项，取不到返回 nil（交给模型翻译）。
+/// 释义形如「电脑 diànnǎo noun computer▸ 个人电脑 …」「我 wǒ pronoun ① （指一人） （用作主语） I; （用作宾语） me …」
+public func dictionaryGloss(_ definition: String) -> String? {
+    // 第一义项到例句（▸）、第二义项（②）、第二词性（B.）或参见（→）为止
+    var s = definition
+    for stop in ["▸", "②", " B. ", "→"] { if let r = s.range(of: stop) { s = String(s[..<r.lowerBound]) } }
+    for p in ["（[^）]*）", "［[^］]*］", "\\[[^\\]]*\\]", "\\([^)]*\\)"] {
+        s = s.replacingOccurrences(of: p, with: " ", options: .regularExpression)
+    }
+    // 词性之后才是英文；没有可识别的词性就不猜
+    let pos = "noun|verb|adjective|adverb|pronoun|preposition|conjunction|numeral|classifier|measure word|auxiliary|interjection|exclamation|particle|compound|idiom|phrase|prefix|suffix|onomatopoeia"
+    guard let r = s.range(of: "^.*\\b(\(pos))\\b", options: .regularExpression) else { return nil } // 贪婪：取最后一个词性
+    s = String(s[r.upperBound...])
+    let labels = "literary|polite expression|colloquial|informal|formal|figurative|dialect|derogatory|humorous|archaic|written|spoken|honorific|British|American|offensive|①"
+    s = s.replacingOccurrences(of: "(^|\\s)(\(labels))(?=\\s|$)", with: " ", options: .regularExpression)
+    let gloss = (s.split(whereSeparator: { ";,".contains($0) }).first.map(String.init) ?? "")
+        .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    // 剩下的必须是纯英文（拼音、汉字、残留符号都说明没解析对）
+    guard !gloss.isEmpty, gloss.count <= 60, gloss.unicodeScalars.allSatisfy({ $0.isASCII }) else { return nil }
+    return gloss
+}
