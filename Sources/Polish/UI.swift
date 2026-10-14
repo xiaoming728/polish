@@ -468,6 +468,12 @@ struct UsageTab: View {
     @State var total = UsageDay()
     @State var days: [String] = []
     @State var daily: [UsageDay] = []
+    @State var span: ClosedRange<Date>? // 图表横轴覆盖的日期（各取当天 0 点）；「全部」从最早有记录的一天起
+    static let dayFormat: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
     @State var confirmClear = false
 
     func label(_ r: Range) -> String {
@@ -497,6 +503,9 @@ struct UsageTab: View {
         case .custom: (from, to) = (start, end)
         }
         (total, days, daily) = UsageDay.load(dir: UsageStore.shared.dir, from: from.map { UsageDay.dayKey($0) }, to: to.map { UsageDay.dayKey($0) })
+        let lo = (from ?? days.first.flatMap(Self.dayFormat.date)).map(cal.startOfDay)
+        let hi = cal.startOfDay(for: to ?? today)
+        span = lo.map { min($0, hi)...max($0, hi) }
     }
 
     func appName(_ bundle: String) -> String {
@@ -511,24 +520,77 @@ struct UsageTab: View {
         return tr("约 \(Int(m * 100) + 50)ms", "about \(Int(m * 100) + 50) ms") // 取所在 100ms 档的中点
     }
 
-    /// 每天的润色次数：采纳 / 其他结局叠成一根柱子；只有两个系列，强调色对中性灰，带图例
-    var dailyChart: some View {
+    /// 范围长短决定柱子粒度：只有 1 天时看结局构成（nil），≤31 天按天，≤92 天按周，更长按月
+    func unit(_ s: ClosedRange<Date>) -> Calendar.Component? {
+        let n = (Calendar.current.dateComponents([.day], from: s.lowerBound, to: s.upperBound).day ?? 0) + 1
+        return n <= 1 ? nil : n <= 31 ? .day : n <= 92 ? .weekOfYear : .month
+    }
+
+    func outcomeName(_ o: PolishOutcome) -> String {
+        switch o {
+        case .accepted: return tr("替换", "Replaced")
+        case .copied: return tr("复制", "Copied")
+        case .cancelled: return tr("放弃", "Cancelled")
+        case .dismissed: return tr("失焦", "Dismissed")
+        case .failed: return tr("失败", "Failed")
+        case .verifyFailed: return tr("校验失败", "Verification failed")
+        }
+    }
+
+    /// 只有一天：时间轴上只有一根柱子没有意义，改看各结局的次数（横向柱，单系列，数值直接标在柱尾）
+    var outcomeChart: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(tr("润色结局", "Polish outcomes")).font(.subheadline)
+            Chart(PolishOutcome.allCases, id: \.self) { o in
+                let n = total.polishCount(o)
+                BarMark(x: .value(tr("次数", "Count"), n), y: .value(tr("结局", "Outcome"), outcomeName(o)))
+                    .foregroundStyle(Color.accentColor)
+                    .annotation(position: .trailing) { Text("\(n)").font(.caption).foregroundStyle(.secondary) }
+            }
+            .chartXAxis(.hidden)
+            .frame(height: 150)
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// 按天 / 周 / 月的润色次数：采纳 / 其他结局叠成一根柱子（强调色对中性灰，带图例）；横轴覆盖整个范围，没记录的日子留空
+    func trendChart(_ unit: Calendar.Component, _ s: ClosedRange<Date>) -> some View {
+        let cal = Calendar.current
         let acc = tr("采纳", "Accepted"), other = tr("其他结局", "Other outcomes")
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
+        var bins: [Date: (accepted: Int, all: Int)] = [:]
+        for (day, d) in zip(days, daily) {
+            guard let date = Self.dayFormat.date(from: day), let k = cal.dateInterval(of: unit, for: date)?.start else { continue }
+            bins[k, default: (0, 0)].accepted += d.polishCount(.accepted)
+            bins[k, default: (0, 0)].all += d.polishCount()
+        }
+        let lo = cal.dateInterval(of: unit, for: s.lowerBound)?.start ?? s.lowerBound
+        let hi = cal.dateInterval(of: unit, for: s.upperBound)?.end ?? s.upperBound
+        let slots = max(1, cal.dateComponents([unit], from: lo, to: hi).value(for: unit) ?? 1)
+        let multiYear = cal.component(.year, from: lo) != cal.component(.year, from: s.upperBound)
+        // 轴标签最多约 12 个：7 天以内逐天，再长隔几格标一次
+        let step = slots <= 12 ? 1 : (slots + 11) / 12
+        let format: Date.FormatStyle = unit == .month
+            ? (multiYear ? .dateTime.year().month(.defaultDigits) : .dateTime.month(.abbreviated))
+            : .dateTime.month(.defaultDigits).day()
+        let title = unit == .day ? tr("每天润色次数", "Polishes per day") : unit == .weekOfYear ? tr("每周润色次数", "Polishes per week") : tr("每月润色次数", "Polishes per month")
         return VStack(alignment: .leading, spacing: 6) {
-            Text(tr("每天润色次数", "Polishes per day")).font(.subheadline)
+            Text(title).font(.subheadline)
             Chart {
-                ForEach(Array(zip(days, daily)), id: \.0) { day, d in
-                    let date = f.date(from: day) ?? Date()
-                    let a = d.polishCount(.accepted)
-                    BarMark(x: .value(tr("日期", "Date"), date, unit: .day), y: .value(tr("次数", "Count"), a))
+                ForEach(bins.sorted { $0.key < $1.key }, id: \.key) { date, c in
+                    BarMark(x: .value(tr("日期", "Date"), date, unit: unit), y: .value(tr("次数", "Count"), c.accepted))
                         .foregroundStyle(by: .value(tr("结局", "Outcome"), acc))
-                    BarMark(x: .value(tr("日期", "Date"), date, unit: .day), y: .value(tr("次数", "Count"), d.polishCount() - a))
+                    BarMark(x: .value(tr("日期", "Date"), date, unit: unit), y: .value(tr("次数", "Count"), c.all - c.accepted))
                         .foregroundStyle(by: .value(tr("结局", "Outcome"), other))
                 }
             }
             .chartForegroundStyleScale(domain: [acc, other], range: [Color.accentColor, Color.gray.opacity(0.45)])
+            .chartXScale(domain: lo...hi)
+            .chartXAxis {
+                AxisMarks(values: .stride(by: unit, count: step)) { _ in
+                    AxisGridLine()
+                    AxisValueLabel(format: format, centered: true)
+                }
+            }
             .chartLegend(position: .top, alignment: .leading)
             .frame(height: 150)
         }
@@ -581,7 +643,9 @@ struct UsageTab: View {
             if total.isEmpty {
                 Text(tr("这段时间没有记录", "No records in this period")).foregroundStyle(.secondary)
             } else {
-                if count > 0 { dailyChart }
+                if count > 0, let s = span {
+                    if let u = unit(s) { trendChart(u, s) } else { outcomeChart }
+                }
                 if let first = total.lat[Latency.polishFirst.rawValue], first.contains(where: { $0 > 0 }) { latencyChart(first) }
                 LabeledContent(tr("润色", "Polish"), value: tr("\(count) 次 · 采纳率 \(percent(accepted, of: count))", "\(count) times · \(percent(accepted, of: count)) accepted"))
                 ForEach(profiles, id: \.key) { name, rs in
