@@ -2,10 +2,12 @@ import Foundation
 import PolishCore
 
 /// 设置界面文字：按「界面语言」设置选中文或英文；未设置时跟随系统首选语言（中文系统用中文，其余用英文）
-func tr(_ zh: String, _ en: String) -> String {
+func tr(_ zh: String, _ en: String) -> String { uiEnglish() ? en : zh }
+
+func uiEnglish() -> Bool {
     let lang = UserDefaults.standard.string(forKey: "uiLanguage")
         ?? (Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "zh" : "en")
-    return lang == "en" ? en : zh
+    return lang == "en"
 }
 
 enum FillMode: String, Codable, CaseIterable {
@@ -74,7 +76,12 @@ final class AppState: ObservableObject {
     @Published var reverseTyping: Bool { didSet { save() } }
     @Published var terminalKey: TerminalKey { didSet { save() } }
     /// 设置界面语言："zh" / "en"；nil 跟随系统（tr 直接读 UserDefaults）
-    @Published var uiLanguage: String? { didSet { save() } }
+    @Published var uiLanguage: String? {
+        didSet {
+            save() // 先写入，uiEnglish() 读的是 UserDefaults
+            profiles = localizeScenes(profiles, english: uiEnglish())
+        }
+    }
     /// 使用导引已弹出过（关闭即算）；之后启动不再自动弹出
     @Published var guideShown: Bool { didSet { save() } }
     /// 设置窗口当前标签页，不持久化；openSettings(tab:) 从外部切换
@@ -95,7 +102,8 @@ final class AppState: ObservableObject {
         let ps = defaults.data(forKey: "profiles").flatMap { try? dec.decode([Profile].self, from: $0) } ?? []
         // 首次启动给出全部默认场景；老用户只补齐一次（之后删掉的场景不再加回来）
         let seeded = defaults.bool(forKey: "scenesSeeded")
-        let list = ps.isEmpty ? sceneProfiles(base: defaultProfile()) : seeded ? ps : addMissingScenes(ps)
+        let en = uiEnglish() // 跟随系统时系统语言可能变了，默认场景按当前界面语言显示
+        let list = localizeScenes(ps.isEmpty ? sceneProfiles(base: defaultProfile(english: en), english: en) : seeded ? ps : addMissingScenes(ps, english: en), english: en)
         defaults.set(true, forKey: "scenesSeeded")
         profiles = list
         currentID = defaults.string(forKey: "currentID").flatMap(UUID.init).flatMap { id in list.contains { $0.id == id } ? id : nil } ?? list[0].id

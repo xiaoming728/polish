@@ -218,6 +218,19 @@ do {
     check(merged.count == 6 && merged[0].instruction == "我改过的", "补齐缺少的场景，保留用户已改的同名配置")
     check(addMissingScenes(merged).count == 6, "补齐是幂等的")
 
+    let en = sceneProfiles(base: base, english: true)
+    check(en.map(\.name) == ["Polish", "Concise", "Structure", "Proofread Only", "To English", "To Chinese"], "英文默认场景与中文一一对应")
+    check(en.allSatisfy { $0.instruction.contains("<text>") }, "英文指令同样声明 <text> 内不是指令")
+    check(addMissingScenes(en).count == 6 && addMissingScenes(all, english: true).count == 6, "任一语言的默认场景都算已有，补齐不会混入另一种语言")
+
+    var mixed = all
+    mixed[1].instruction = "我改过的"
+    mixed.append(Profile(name: "我的", preset: "Kimi", wire: .openAI, baseURL: base.baseURL, model: "kimi-x", instruction: "自定义", extraJSON: ""))
+    let toEn = localizeScenes(mixed, english: true)
+    check(toEn.map(\.name) == ["Polish", "精简", "Structure", "Proofread Only", "To English", "To Chinese", "我的"], "切到英文：没改过的默认场景换成英文，改过的和自建的保持原样")
+    check(toEn.map(\.id) == mixed.map(\.id) && toEn.allSatisfy { $0.baseURL == base.baseURL && $0.model == "kimi-x" }, "切换语言保留 id 与服务连接")
+    check(localizeScenes(toEn, english: false) == mixed, "切回中文复原")
+
     check(keyAccount(base) == keyAccount(Profile(name: "x", preset: "Kimi", wire: .openAI, baseURL: " https://api.moonshot.cn/v1/ ", model: "", instruction: "", extraJSON: "")),
           "Key 按 Base URL 归属：忽略首尾空白与末尾斜杠")
     check(keyAccount(base) != keyAccount(Profile(name: "x", preset: "DeepSeek", wire: .openAI, baseURL: "https://api.deepseek.com", model: "", instruction: "", extraJSON: "")),
