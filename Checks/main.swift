@@ -49,21 +49,29 @@ if CommandLine.arguments.dropFirst().first == "serve" {
 
 nonisolated(unsafe) var stash: AnyObject?
 
-// core-checks stream <openAI|anthropic> <baseURL>：真实 URLSession 流式请求，供 scripts/stream-e2e.py 对照模拟服务端
+// core-checks stream <openAI|anthropic> <baseURL> [fast|full] [n]：真实 URLSession 流式请求，供 scripts/stream-e2e.py 对照模拟服务端；
+// n > 1 时依次发 n 次相同请求（验证输入提示的缓存、失败退避、提速参数被拒后的记忆），每次一行结果
 if CommandLine.arguments.dropFirst().first == "stream" {
     let a = CommandLine.arguments
     let p = Profile(name: "e2e", preset: "e2e", wire: Wire(rawValue: a[2])!, baseURL: a[3], model: "m", instruction: "润色", extraJSON: "")
+    let fast = a.count > 4 && a[4] == "fast"
+    var left = a.count > 5 ? Int(a[5])! : 1
     MainActor.assumeIsolated {
-        var deltas = 0
         let polisher = Polisher() // 与 app 一样必须持有：start() 内部只弱引用自身
         stash = polisher
-        polisher.start(p, apiKey: "k", text: "原文", onDelta: { _ in deltas += 1 }, onDone: { r in
-            switch r {
-            case .success(let s): print("OK deltas=\(deltas) \(s)")
-            case .failure(let e): print("ERR \(e.localizedDescription)")
-            }
-            exit(0)
-        })
+        @MainActor func run() {
+            var deltas = 0
+            polisher.start(p, apiKey: "k", text: "原文", fast: fast, onDelta: { _ in deltas += 1 }, onDone: { r in
+                switch r {
+                case .success(let s): print("OK deltas=\(deltas) \(s)")
+                case .failure(let e): print("ERR \(e.localizedDescription)")
+                }
+                left -= 1
+                if left == 0 { exit(0) }
+                DispatchQueue.main.async { MainActor.assumeIsolated { run() } } // 不在 onDone 里同步重入 start
+            })
+        }
+        run()
     }
     dispatchMain()
 }
@@ -79,7 +87,7 @@ do {
     var d = StreamDecoder(wire: .openAI)
     check(d.feed(line: #"data: {"choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}"#) == nil, "OpenAI：空 content 不产出")
     check(d.feed(line: #"data: {"choices":[{"index":0,"delta":{"content":"你好"}}]}"#) == .text("你好"), "OpenAI：content 增量")
-    check(d.feed(line: #"data:{"choices":[{"delta":{"reasoning_content":"想"}}]}"#) == nil, "OpenAI：忽略思考内容，data: 后无空格也能解析")
+    check(d.feed(line: #"data:{"choices":[{"delta":{"reasoning_content":"想"}}]}"#) == .reasoning, "OpenAI：思考内容不进正文，data: 后无空格也能解析")
     check(d.feed(line: ": OPENROUTER PROCESSING") == nil, "OpenAI：忽略注释行")
     check(d.feed(line: #"data: {"choices":[]}"#) == nil, "OpenAI：容忍空 choices（usage 块）")
     check(d.feed(line: "data: [DONE]") == .done, "OpenAI：[DONE] 结束")
@@ -93,7 +101,7 @@ do {
     check(d.feed(line: "event: content_block_delta") == nil, "Anthropic：event 行不产出")
     check(d.feed(line: #"data: {"type":"message_start","message":{"id":"msg_1"}}"#) == nil, "Anthropic：message_start 不产出")
     check(d.feed(line: #"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#) == .text("Hi"), "Anthropic：text_delta")
-    check(d.feed(line: #"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"x"}}"#) == nil, "Anthropic：忽略 thinking_delta")
+    check(d.feed(line: #"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"x"}}"#) == .reasoning, "Anthropic：thinking_delta 不进正文")
     check(d.feed(line: #"data: {"type":"ping"}"#) == nil, "Anthropic：ping")
     check(d.feed(line: #"data: {"type":"message_stop"}"#) == .done, "Anthropic：message_stop 结束")
     check(d.feed(line: #"data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#) == .failure("Overloaded"), "Anthropic：error 事件")
@@ -615,6 +623,17 @@ do {
     var threw = false
     do { _ = try makeRequest(conn("https://api.siliconflow.cn/v1", " "), apiKey: "k", text: "t") } catch RequestError.noModel { threw = true }
     check(threw && RequestError.noModel.localizedDescription.contains("未填写模型"), "空模型本地报「未填写模型」，不发请求")
+    // 推理与正文分离：独立字段的推理不进正文；内联 <think> 块剥掉，流式中途不露出
+    check(stripThinking("<think>想一想</think>\n\n你好") == "你好" && stripThinking("\n<think>a</think>b") == "b", "去掉开头的 <think> 块")
+    check(stripThinking("<think>还在想") == "" && stripThinking("<thi") == "" && stripThinking("<") == "", "推理没结束 / 标签只到一半：先不显示")
+    check(stripThinking("你好") == "你好" && stripThinking("用 <think> 标签包裹推理") == "用 <think> 标签包裹推理" && stripThinking("<b>粗体</b>") == "<b>粗体</b>",
+          "正文里提到 <think> 或别的标签：原样保留")
+    var od = StreamDecoder(wire: .openAI)
+    check(od.feed(line: #"data: {"choices":[{"delta":{"reasoning_content":"想"}}]}"#) == .reasoning
+          && od.feed(line: #"data: {"choices":[{"delta":{"reasoning":"想"}}]}"#) == .reasoning
+          && od.feed(line: #"data: {"choices":[{"delta":{"content":"","reasoning_content":"想"}}]}"#) == .reasoning, "OpenAI 兼容：reasoning_content / reasoning 是推理，不进正文")
+    var ad = StreamDecoder(wire: .anthropic)
+    check(ad.feed(line: #"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"想"}}"#) == .reasoning, "Anthropic：thinking_delta 是推理，不进正文")
     check(defaultProvider().preset == "DeepSeek" && defaultProfile().baseURL == defaultProvider().baseURL, "默认服务商与默认场景连接一致")
 }
 

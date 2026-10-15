@@ -15,8 +15,20 @@ public func finalize(_ result: String, original: String) -> String {
 
 public enum StreamEvent: Equatable, Sendable {
     case text(String)
+    case reasoning // 独立字段里的推理分片：不显示，只用来在没有正文时说明原因
     case done
     case failure(String)
+}
+
+/// 去掉正文开头内联的推理块 <think>…</think>（Ollama / LM Studio / vLLM 未开推理解析、MiniMax 等把推理写进 content）。
+/// 流式时推理还没结束（含标签只到一半）返回空，正文开始后才有内容
+public func stripThinking(_ raw: String) -> String {
+    let s = raw.drop { $0.isWhitespace }
+    let open = "<think>"
+    if s.count < open.count { return open.hasPrefix(s) && !s.isEmpty ? "" : raw }
+    guard s.hasPrefix(open) else { return raw }
+    guard let end = s.range(of: "</think>") else { return "" }
+    return String(s[end.upperBound...].drop { $0.isWhitespace })
 }
 
 /// 逐行解码 SSE。URLSession 的 `lines` 会丢掉空行，所以不依赖空行分帧：
@@ -36,12 +48,17 @@ public struct StreamDecoder {
         switch wire {
         case .openAI:
             let delta = ((obj["choices"] as? [[String: Any]])?.first?["delta"]) as? [String: Any]
-            guard let s = delta?["content"] as? String, !s.isEmpty else { return nil }
+            guard let s = delta?["content"] as? String, !s.isEmpty else {
+                // DeepSeek / 百炼 / 硅基流动用 reasoning_content，OpenRouter / Ollama 用 reasoning
+                let r = (delta?["reasoning_content"] as? String) ?? (delta?["reasoning"] as? String)
+                return r?.isEmpty == false ? .reasoning : nil
+            }
             return .text(s)
         case .anthropic:
             switch obj["type"] as? String {
             case "content_block_delta":
                 let delta = obj["delta"] as? [String: Any]
+                if delta?["type"] as? String == "thinking_delta" { return .reasoning }
                 guard delta?["type"] as? String == "text_delta", let s = delta?["text"] as? String, !s.isEmpty else { return nil }
                 return .text(s)
             case "message_stop":

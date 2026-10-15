@@ -28,9 +28,10 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        case = self.path.split("/")[1]
-        seen[case] = (dict(self.headers), body)
-        hits[case] = hits.get(case, 0) + 1
+        key = self.path.split("/")[1]  # case~tag：同一种响应、独立计数
+        case = key.split("~")[0]
+        seen[key] = (dict(self.headers), body)
+        hits[key] = hits.get(key, 0) + 1
         if case == "openai":
             d = lambda s: "data: " + json.dumps({"choices": [{"delta": {"content": s}}]})
             self.sse([": keep-alive", d(""), d("润色"), "", d("后的"), d("文本"), "data: [DONE]"])
@@ -48,6 +49,11 @@ class H(http.server.BaseHTTPRequestHandler):
             self.wfile.write(payload)
         elif case == "mandatory":
             self.sse(['data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}', 'data: {"type":"message_stop"}'])
+        elif case == "inlinethink":  # 推理写在 content 里，标签被拆到多个分片
+            d = lambda s: "data: " + json.dumps({"choices": [{"delta": {"content": s}}]})
+            self.sse([d("<thi"), d("nk>先想 {x}"), d("</thi"), d("nk>\n\n"), d("结果"), "data: [DONE]"])
+        elif case == "reasoningonly":  # 推理用完了 max_tokens，没有正文
+            self.sse(['data: {"choices":[{"delta":{"reasoning_content":"想"}}]}', 'data: {"choices":[{"delta":{"reasoning_content":"再想"}}]}', "data: [DONE]"])
         elif case == "unauthorized":
             payload = json.dumps({"error": {"message": "Invalid API key"}}).encode()
             self.send_response(401)
@@ -78,9 +84,9 @@ threading.Thread(target=srv.serve_forever, daemon=True).start()
 base = f"http://127.0.0.1:{srv.server_address[1]}"
 
 
-def run(wire, case):
+def run(wire, case, mode="full", n=1):
     path = f"{base}/{case}" + ("/v1" if wire == "openAI" else "")
-    out = subprocess.run([f"{BIN}/core-checks", "stream", wire, path], capture_output=True, text=True, timeout=60).stdout.strip()
+    out = subprocess.run([f"{BIN}/core-checks", "stream", wire, path, mode, str(n)], capture_output=True, text=True, timeout=60).stdout.strip()
     return out
 
 
@@ -103,6 +109,21 @@ o = run("anthropic", "mandatory")
 check(o == "OK deltas=1 ok" and hits["mandatory"] == 2 and "output_config" not in seen["mandatory"][1], "提速参数被 400 拒绝：去掉后自动重试一次", o)
 o = run("anthropic", "bad400")
 check(o == "ERR HTTP 400：thinking is mandatory" and hits["bad400"] == 2, "重试仍 400：显示服务端消息，不再重试", o)
+
+# 输入提示（fast）：同一请求只发一次；失败后 15s 内不再请求；提速参数被拒后记住，之后直接不带
+o = run("openAI", "openai~cache", "fast", 3).splitlines()
+check(len(o) == 3 and all(l.startswith("OK") for l in o) and hits["openai~cache"] == 1, "输入提示：相同请求命中缓存，只发一次", f"{o} hits={hits.get('openai~cache')}")
+o = run("openAI", "unauthorized~backoff", "fast", 3).splitlines()
+check(len(o) == 3 and all(l == "ERR HTTP 401：Invalid API key" for l in o) and hits["unauthorized~backoff"] == 1, "输入提示：失败后退避，不再每次请求", f"hits={hits.get('unauthorized~backoff')}")
+o = run("openAI", "unauthorized~full", "full", 2).splitlines()
+check(hits["unauthorized~full"] == 2, "⌥P 润色不缓存、不退避", f"hits={hits.get('unauthorized~full')}")
+o = run("anthropic", "mandatory~remember", "full", 2).splitlines()
+check(o == ["OK deltas=1 ok"] * 2 and hits["mandatory~remember"] == 3, "提速参数被拒后记住：第二次直接不带（共 2 + 1 次）", f"{o} hits={hits.get('mandatory~remember')}")
+
+o = run("openAI", "inlinethink")
+check(o == "OK deltas=1 结果", "内联 <think> 推理被剥掉，只回正文（推理期间不推送增量）", o)
+o = run("openAI", "reasoningonly")
+check(o.startswith("ERR 模型只输出了推理、没有正文"), "只有推理没有正文：说明是推理用完了额度", o)
 
 o = run("openAI", "unauthorized")
 check(o == "ERR HTTP 401：Invalid API key", "HTTP 401 显示服务端消息", o)
