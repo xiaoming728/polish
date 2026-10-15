@@ -401,13 +401,19 @@ struct ProvidersTab: View {
         busy = true
         status = tr("测试中…", "Testing…")
         let start = Date()
+        let k = key
         Task {
+            // 不走 Polisher.start 的看门狗，只有 URLSession 120s 空闲超时：服务端不回时按钮会一直禁用，这里限 10 秒
+            let work = Task { try await Polisher.stream(p, apiKey: k, text: "你好") { _ in } }
+            let dog = Task { try await Task.sleep(nanoseconds: 10_000_000_000); work.cancel() }
             do {
-                _ = try await Polisher.stream(p, apiKey: key, text: "你好") { _ in }
+                _ = try await work.value
                 status = String(format: tr("✓ 连接成功 · %.1f 秒", "✓ Connected · %.1f s"), Date().timeIntervalSince(start))
             } catch {
-                status = "✗ " + Polisher.describe(error).localizedDescription
+                status = work.isCancelled ? tr("✗ 超时：10 秒内没有完成，检查网络、Base URL 和模型", "✗ Timed out: no reply within 10 s; check the network, Base URL and model")
+                    : "✗ " + Polisher.describe(error).localizedDescription
             }
+            dog.cancel()
             busy = false
         }
     }
