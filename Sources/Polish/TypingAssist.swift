@@ -441,9 +441,14 @@ final class TypingAssist {
         sentencePolisher.start(sentenceProfile(p, state.targetLanguage), apiKey: key, text: s + tail, fast: true, onDelta: { _ in }, onDone: { [weak self] r in
             // 期间上屏了新内容、又敲键或换了候选：结果作废
             guard let self, self.sentence == s, (self.sentenceIncomplete && tail.isEmpty) || (self.buffer.text == pinyin && self.buffer.highlight == highlight), self.sentenceNeedsConversion == unresolved else { return }
+            var why = "-"
             switch r {
             case .success(let out):
-                guard let t = parseSentence(out) else { self.model.error = tr("无法解析模型结果", "Couldn’t parse the model’s result"); break }
+                guard let t = parseSentence(out) else {
+                    why = "parse rawLen=\(out.count) json=\(out.contains("{"))"
+                    self.model.error = tr("无法解析模型结果", "Couldn’t parse the model’s result")
+                    break
+                }
                 // 本句里没读到候选、先记下的拼音换成模型补全的中文（退格计数要按中文）
                 if unresolved, let zh = t.zh {
                     if tail.isEmpty {
@@ -461,9 +466,10 @@ final class TypingAssist {
                 self.model.zh = unresolved || pinyinTail ? t.zh ?? self.sentence + tail : s + tail
                 self.model.pairs = t.pairs
             case .failure(let e):
+                why = String(e.localizedDescription.prefix(80))
                 self.model.error = e.localizedDescription
             }
-            Log.write("typing sentence len=\(s.count + tail.count) ok=\(self.model.en != nil) pairs=\(self.model.pairs.count) ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
+            Log.write("typing sentence len=\(s.count + tail.count) ok=\(self.model.en != nil) pairs=\(self.model.pairs.count) error=\(why) ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
             self.show()
             self.registerKeys()
         })
@@ -694,6 +700,7 @@ final class TypingAssist {
                     self.model.zh = c.zh
                     self.hintShown(t0)
                 } else {
+                    Log.write("typing result parse failed rawLen=\(s.count) json=\(s.contains("{"))")
                     self.model.error = tr("无法解析模型结果", "Couldn’t parse the model’s result")
                 }
             case .failure(let e):

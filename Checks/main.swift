@@ -76,6 +76,37 @@ if CommandLine.arguments.dropFirst().first == "stream" {
     dispatchMain()
 }
 
+// core-checks probe-typing：开发用。读 stdin 的 JSON 行 {"provider":{…},"key":"…","text":"…","kind":"sentence|pinyin|word"}，
+// 走与 app 相同的请求构造（sentenceProfile / fastRequest）发真实请求，输出原始结果与解析是否成功（不打印 Key）
+if CommandLine.arguments.dropFirst().first == "probe-typing" {
+    MainActor.assumeIsolated {
+        Task { @MainActor in
+            while let line = readLine() {
+                let o = try! JSONSerialization.jsonObject(with: Data(line.utf8)) as! [String: Any]
+                let v = try! JSONDecoder().decode(Provider.self, from: JSONSerialization.data(withJSONObject: o["provider"]!))
+                let text = o["text"] as! String, kind = o["kind"] as! String
+                var p = v.profile()
+                switch kind {
+                case "sentence": p = sentenceProfile(p, .english)
+                case "pinyin": p.instruction = typingInstruction(.english)
+                default: p.instruction = translateInstruction(.english)
+                }
+                let t0 = Date()
+                var parsed = "-"
+                let raw: String
+                do {
+                    raw = try await Polisher.stream(p, apiKey: o["key"] as! String, text: text, fast: true) { _ in }
+                    parsed = kind == "sentence" ? (parseSentence(raw) != nil ? "ok" : "FAIL") : kind == "pinyin" ? (parseConversion(raw) != nil ? "ok" : "FAIL") : "n/a"
+                } catch { raw = "ERR " + error.localizedDescription }
+                let out: [String: Any] = ["provider": v.name, "kind": kind, "text": text, "parse": parsed, "ms": Int(Date().timeIntervalSince(t0) * 1000), "raw": raw]
+                print(String(decoding: try! JSONSerialization.data(withJSONObject: out), as: UTF8.self))
+            }
+            exit(0)
+        }
+    }
+    dispatchMain()
+}
+
 var failures = 0
 func check(_ ok: Bool, _ name: String, file: String = #file, line: Int = #line) {
     if ok { print("✅ \(name)") } else { failures += 1; print("❌ \(name)  (\(line))") }
@@ -472,6 +503,15 @@ do {
     check(parseSentence(#"{"en":"Hi","pairs":"bad"}"#) == SentenceTranslation(en: "Hi", pairs: []), "pairs 格式不对：只保留译文")
     check(parseSentence(#"{"en":"Hi","zh":""}"#)?.zh == nil, "zh 为空当作没给")
     check(parseSentence(#"{"pairs":[]}"#) == nil && parseSentence("no") == nil, "缺译文返回 nil")
+    // 实测 qwen-flash 长句：pairs 里多一个引号，整段 JSON 不合法；zh / en 和其余好的对照照样取出
+    let broken = parseSentence(#"{"zh":"其中支付回调要兼容","en":"Among them, the \"payment\" callback","pairs":[["其中","Among them"],"["支付回调","payment callback"],["要兼容","needs to"]]}"#)
+    check(broken?.en == #"Among them, the "payment" callback"# && broken?.zh == "其中支付回调要兼容", "JSON 不合法：逐字段取出译文与原文，转义还原")
+    check(broken?.pairs == [SentencePair(zh: "其中", en: "Among them"), SentencePair(zh: "支付回调", en: "payment callback"), SentencePair(zh: "要兼容", en: "needs to")], "JSON 不合法：格式正确的对照照样取出")
+    // 实测 Qwen3.5-4B：pairs 混进字符串，整体类型不对
+    let mixed = parseSentence(#"{"zh":"这个bug我明天再修","en":"I'll fix this bug tomorrow.","pairs":[["这个","this"],"bug","bug",["明天","tomorrow"]]}"#)
+    check(mixed?.pairs == [SentencePair(zh: "这个", en: "this"), SentencePair(zh: "明天", en: "tomorrow")], "pairs 混进非数组元素：保留格式正确的对照")
+    check(parseConversion(#"{"en":"Hello","zh":"你好"",}"#) == Conversion(en: "Hello", zh: "你好"), "拼音换算 JSON 不合法：逐字段兜底")
+    check(parseSentence(#"{"zh":"你好"}"#) == nil && parseSentence("Hello world") == nil, "取不到译文仍返回 nil")
 
     func spans(_ text: String, _ parts: [String], _ whole: Bool) -> [String] {
         colorRanges(text, parts, wholeWords: whole).map { "\(text[$0.range])#\($0.index)" }

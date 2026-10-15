@@ -145,10 +145,9 @@ public func typingInstruction(_ lang: TypingLanguage) -> String { """
 
 /// 解析模型返回的 {"en","zh"}；容忍代码块包裹和前后多余文字
 public func parseConversion(_ s: String) -> Conversion? {
-    guard let start = s.firstIndex(of: "{"), let end = s.lastIndex(of: "}"), start < end,
-          let obj = (try? JSONSerialization.jsonObject(with: Data(s[start...end].utf8))) as? [String: Any],
-          let en = (obj["en"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !en.isEmpty,
-          let zh = (obj["zh"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !zh.isEmpty else { return nil }
+    let obj = jsonObject(s)
+    let field = { (k: String) in ((obj?[k] as? String) ?? (obj == nil ? jsonStringField(s, k) : nil))?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    guard let en = field("en"), !en.isEmpty, let zh = field("zh"), !zh.isEmpty else { return nil }
     return Conversion(en: en, zh: zh)
 }
 
@@ -267,14 +266,41 @@ public struct SentenceTranslation: Equatable, Sendable {
     public init(zh: String? = nil, en: String, pairs: [SentencePair]) { self.zh = zh; self.en = en; self.pairs = pairs }
 }
 
-/// 解析 {"zh","en","pairs"}；pairs 缺失或格式不对时只丢掉对应关系，译文照常显示
+/// 模型输出里的 JSON 对象；整体不合法时返回 nil（由调用方逐字段兜底）
+private func jsonObject(_ s: String) -> [String: Any]? {
+    guard let start = s.firstIndex(of: "{"), let end = s.lastIndex(of: "}"), start < end else { return nil }
+    return (try? JSONSerialization.jsonObject(with: Data(s[start...end].utf8))) as? [String: Any]
+}
+
+/// 小模型偶尔写出不合法的 JSON（实测 qwen-flash 长句：pairs 里多一个引号 `],"["`），整段解析失败时
+/// 按字段名取出 "key":"…" 的字符串值，转义照 JSON 规则还原
+func jsonStringField(_ s: String, _ key: String) -> String? {
+    let pattern = "\"" + key + "\"\\s*:\\s*(\"(?:[^\"\\\\]|\\\\.)*\")"
+    guard let r = s.range(of: pattern, options: .regularExpression),
+          let q = s[r].range(of: "\"(?:[^\"\\\\]|\\\\.)*\"$", options: .regularExpression) else { return nil }
+    return (try? JSONSerialization.jsonObject(with: Data(s[r][q].utf8), options: .fragmentsAllowed)) as? String
+}
+
+/// 逐个取出格式正确的 ["原文","译文"]：pairs 整体类型不对或 JSON 不合法时，好的那些照样能用
+func pairFields(_ s: String) -> [SentencePair] {
+    let str = "\"(?:[^\"\\\\]|\\\\.)*\""
+    guard let re = try? NSRegularExpression(pattern: "\\[\\s*(" + str + ")\\s*,\\s*(" + str + ")\\s*\\]") else { return [] }
+    let ns = s as NSString
+    return re.matches(in: s, range: NSRange(location: 0, length: ns.length)).compactMap { m in
+        let f = { (i: Int) in (try? JSONSerialization.jsonObject(with: Data(ns.substring(with: m.range(at: i)).utf8), options: .fragmentsAllowed)) as? String ?? "" }
+        let zh = f(1), en = f(2)
+        return zh.isEmpty || en.isEmpty ? nil : SentencePair(zh: zh, en: en)
+    }
+}
+
+/// 解析 {"zh","en","pairs"}；pairs 缺失或格式不对时只丢掉坏的对应关系，JSON 不合法时逐字段取，译文照常显示
 public func parseSentence(_ s: String) -> SentenceTranslation? {
-    guard let start = s.firstIndex(of: "{"), let end = s.lastIndex(of: "}"), start < end,
-          let obj = (try? JSONSerialization.jsonObject(with: Data(s[start...end].utf8))) as? [String: Any],
-          let en = (obj["en"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !en.isEmpty else { return nil }
-    let pairs = (obj["pairs"] as? [[String]] ?? []).compactMap { $0.count == 2 && !$0[0].isEmpty && !$0[1].isEmpty ? SentencePair(zh: $0[0], en: $0[1]) : nil }
-    let zh = (obj["zh"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-    return SentenceTranslation(zh: zh?.isEmpty == false ? zh : nil, en: en, pairs: pairs)
+    let obj = jsonObject(s)
+    let field = { (k: String) in ((obj?[k] as? String) ?? (obj == nil ? jsonStringField(s, k) : nil))?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    guard let en = field("en"), !en.isEmpty else { return nil }
+    let typed = (obj?["pairs"] as? [[String]])?.compactMap { $0.count == 2 && !$0[0].isEmpty && !$0[1].isEmpty ? SentencePair(zh: $0[0], en: $0[1]) : nil }
+    let zh = field("zh")
+    return SentenceTranslation(zh: zh?.isEmpty == false ? zh : nil, en: en, pairs: typed ?? pairFields(s))
 }
 
 /// 整句沿用输入提示的提速参数，但句子比单词长：限长的服务放宽到 400（不限长的保持不限）
