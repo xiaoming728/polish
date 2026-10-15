@@ -612,6 +612,9 @@ do {
     let old = sceneProfiles(base: conn("https://api.deepseek.com", "a")) + [conn("https://api.deepseek.com", "b"), conn("https://api.moonshot.cn/v1", "a")]
     let migrated = migrateProviders(old)
     check(migrated.map(\.model) == ["a", "b", "a"] && migrated.map(\.baseURL).last == "https://api.moonshot.cn/v1", "旧版场景按连接去重迁移成服务商")
+    var threw = false
+    do { _ = try makeRequest(conn("https://api.siliconflow.cn/v1", " "), apiKey: "k", text: "t") } catch RequestError.noModel { threw = true }
+    check(threw && RequestError.noModel.localizedDescription.contains("未填写模型"), "空模型本地报「未填写模型」，不发请求")
     check(defaultProvider().preset == "DeepSeek" && defaultProfile().baseURL == defaultProvider().baseURL, "默认服务商与默认场景连接一致")
 }
 

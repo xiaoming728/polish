@@ -25,6 +25,17 @@ public struct Profile: Codable, Equatable, Identifiable, Sendable {
 public enum RequestError: Error, Equatable {
     case badURL
     case badExtraJSON(String)
+    case noModel
+}
+
+extension RequestError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .badURL: return "Base URL 无效"
+        case .badExtraJSON(let m): return m
+        case .noModel: return "未填写模型：到设置 → 服务商里填写，或从 /models 拉取"
+        }
+    }
 }
 
 func endpoint(_ p: Profile, _ path: String) throws -> URL {
@@ -85,6 +96,8 @@ public func draftLanguage(_ text: String) -> String? {
 public func makeRequest(_ p: Profile, apiKey: String, text: String, tagLanguage: Bool = true, speed: Bool = true) throws -> URLRequest {
     let lang = tagLanguage ? draftLanguage(text).map { " lang=\"\($0)\"" } ?? "" : ""
     let user = ["role": "user", "content": "<text\(lang)>\n\(text)\n</text>"]
+    // 空模型时服务端多半只回「参数无效」，本地先说清楚
+    guard !p.model.trimmingCharacters(in: .whitespaces).isEmpty else { throw RequestError.noModel }
     var body: [String: Any] = ["model": p.model, "stream": true]
     switch p.wire {
     case .openAI:

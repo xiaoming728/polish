@@ -335,15 +335,18 @@ struct ProvidersTab: View {
     func form(_ i: Int) -> some View {
         Form {
             TextField(tr("名称", "Name"), text: $state.providers[i].name)
-            Picker(tr("服务商", "Provider"), selection: $state.providers[i].preset) {
-                ForEach(presets, id: \.name) { Text($0.name).tag($0.name) }
-            }
-            .onChange(of: state.providers[i].preset) { old, new in
+            // 只在用户选预设时套用：onChange 观察 providers[i] 时，切换左侧选中项也会触发，把模型冲成预设默认值
+            Picker(tr("服务商", "Provider"), selection: Binding(get: { state.providers[i].preset }, set: { new in
                 guard let p = presets.first(where: { $0.name == new }) else { return }
-                if state.providers[i].name == old { state.providers[i].name = new } // 没改过的名称跟着预设走
-                state.providers[i].wire = p.wire
-                if !p.baseURL.isEmpty { state.providers[i].baseURL = p.baseURL }
-                state.providers[i].model = p.model
+                var v = state.providers[i]
+                if v.name == v.preset { v.name = new } // 没改过的名称跟着预设走
+                v.preset = new
+                v.wire = p.wire
+                if !p.baseURL.isEmpty { v.baseURL = p.baseURL }
+                v.model = p.model
+                state.providers[i] = v
+            })) {
+                ForEach(presets, id: \.name) { Text($0.name).tag($0.name) }
             }
             Picker(tr("协议", "Protocol"), selection: $state.providers[i].wire) {
                 Text(tr("OpenAI 兼容", "OpenAI compatible")).tag(Wire.openAI)
