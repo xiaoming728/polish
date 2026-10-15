@@ -332,6 +332,15 @@ struct ProvidersTab: View {
         if let i = index { key = KeyStore.apiKey(state.providers[i].profile()) }
     }
 
+    /// 连接字段的绑定：改了之后额外 JSON 若仍是默认提速参数，跟着换成新连接的（retuned）
+    func field<T>(_ i: Int, _ kp: WritableKeyPath<Provider, T>) -> Binding<T> {
+        Binding(get: { state.providers[i][keyPath: kp] }, set: { v in
+            var n = state.providers[i]
+            n[keyPath: kp] = v
+            state.providers[i] = retuned(state.providers[i], n)
+        })
+    }
+
     func form(_ i: Int) -> some View {
         Form {
             TextField(tr("名称", "Name"), text: $state.providers[i].name)
@@ -344,15 +353,15 @@ struct ProvidersTab: View {
                 v.wire = p.wire
                 if !p.baseURL.isEmpty { v.baseURL = p.baseURL }
                 v.model = p.model
-                state.providers[i] = v
+                state.providers[i] = retuned(state.providers[i], v)
             })) {
                 ForEach(presets, id: \.name) { Text($0.name).tag($0.name) }
             }
-            Picker(tr("协议", "Protocol"), selection: $state.providers[i].wire) {
+            Picker(tr("协议", "Protocol"), selection: field(i, \.wire)) {
                 Text(tr("OpenAI 兼容", "OpenAI compatible")).tag(Wire.openAI)
                 Text("Anthropic").tag(Wire.anthropic)
             }
-            TextField("Base URL", text: $state.providers[i].baseURL)
+            TextField("Base URL", text: field(i, \.baseURL))
                 .onChange(of: state.providers[i].baseURL) { _, _ in loadKey() } // Key 跟着服务走
             LabeledContent("API Key") {
                 HStack {
@@ -370,10 +379,10 @@ struct ProvidersTab: View {
             }
             LabeledContent(tr("模型", "Model")) {
                 HStack {
-                    TextField("", text: $state.providers[i].model)
+                    TextField("", text: field(i, \.model))
                     Menu(tr("从 /models 拉取", "Fetch from /models")) {
                         if models.isEmpty { Text(tr("（暂无，点「刷新列表」）", "(None yet, click “Refresh List”)")) }
-                        ForEach(models, id: \.self) { m in Button(m) { state.providers[i].model = m } }
+                        ForEach(models, id: \.self) { m in Button(m) { field(i, \.model).wrappedValue = m } }
                         Divider()
                         Button(tr("刷新列表", "Refresh List")) {
                             Task {
@@ -385,8 +394,8 @@ struct ProvidersTab: View {
                     }.fixedSize()
                 }
             }
-            Section(tr("额外请求体 JSON（可选，按顶层键合并，可覆盖默认的关闭思考等提速参数）", "Extra request body JSON (optional, merged by top-level key; overrides the default speed settings such as thinking off)")) {
-                TextEditor(text: $state.providers[i].extraJSON).font(.system(size: 11, design: .monospaced)).frame(height: 50)
+            Section(tr("额外请求体 JSON（按顶层键合并进请求体；默认填好关闭思考等提速参数，可直接改或删）", "Extra request body JSON (merged into the request by top-level key; prefilled with speed settings such as thinking off, edit or delete freely)")) {
+                TextEditor(text: $state.providers[i].extraJSON).font(.system(size: 11, design: .monospaced)).frame(height: 90)
             }
             HStack {
                 Button(tr("测试连接", "Test Connection")) { test(i) }.disabled(busy)

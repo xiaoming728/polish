@@ -116,7 +116,10 @@ final class AppState: ObservableObject {
         // 旧版没有服务商列表：从各场景的连接迁移，当前服务商取当前场景的连接
         let saved = defaults.data(forKey: "providers").flatMap { try? dec.decode([Provider].self, from: $0) } ?? []
         let vs = saved.isEmpty ? (ps.isEmpty ? [defaultProvider()] : migrateProviders(ps)) : saved
-        providers = vs
+        // 提速参数改为显式写在额外 JSON 里：老服务商只补一次缺少的键（用户写过的不动）
+        let explicit = defaults.bool(forKey: "speedJSONSeeded")
+        providers = explicit ? vs : vs.map { v in var w = v; w.extraJSON = withSpeedDefaults(v.profile()); return w }
+        defaults.set(true, forKey: "speedJSONSeeded")
         let old = list.first { $0.id == cid } ?? list[0]
         let oldConn = Provider(name: "", preset: old.preset, wire: old.wire, baseURL: old.baseURL, model: old.model, extraJSON: old.extraJSON)
         providerID = defaults.string(forKey: "providerID").flatMap(UUID.init).flatMap { id in vs.contains { $0.id == id } ? id : nil }

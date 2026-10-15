@@ -57,15 +57,17 @@ func authorize(_ r: inout URLRequest, _ p: Profile, _ apiKey: String) {
     }
 }
 
-/// 提速参数（关闭思考 / 最低推理档 / 按吞吐选路），只对已知服务发送（未知服务乱发会报错）。
-/// 润色和输入提示都不需要推理；实测 deepseek-flash 润色首字 1243ms → 633ms。用户可用「额外请求体 JSON」覆盖。
-/// 强制思考的模型（GLM-5.3、部分 Kimi / OpenRouter 模型等）会以 400 拒绝，由 Polisher.stream 去掉这些参数重试一次
+/// 默认提速参数（关闭思考 / 最低推理档 / 按吞吐选路），写进服务商的「额外请求体 JSON」由用户可见可改（见 speedJSON）；
+/// 只给已知服务：按域名，域名认不出时按模型名（TokenHub 等聚合服务转发的 deepseek / qwen / glm）。
+/// 润色和输入提示都不需要推理；实测 deepseek-flash 润色首字 1243ms → 633ms。
+/// 强制思考的模型（GLM-5.3、部分 Kimi / OpenRouter 模型等）会以 400 拒绝，由 Polisher.stream 去掉这些键重试一次
 public func speedParams(_ p: Profile) -> [String: Any] {
     let url = URL(string: p.baseURL.trimmingCharacters(in: .whitespaces))
     let host = url?.host ?? ""
     let off: [String: Any] = ["thinking": ["type": "disabled"]]
     if ["deepseek.com", "bigmodel.cn", "z.ai", "volces.com", "moonshot.cn", "moonshot.ai"].contains(where: { host.hasSuffix($0) }) { return off }
-    if host.contains("dashscope") || host.hasSuffix("siliconflow.cn") || host.hasSuffix("siliconflow.com") { return ["enable_thinking": false] }
+    // 百炼除 dashscope 外还有专属域名 ws-….maas.aliyuncs.com
+    if host.contains("dashscope") || host.hasSuffix("maas.aliyuncs.com") || host.hasSuffix("siliconflow.cn") || host.hasSuffix("siliconflow.com") { return ["enable_thinking": false] }
     if host.hasSuffix("openrouter.ai") { return ["reasoning": ["effort": "none"], "provider": ["sort": "throughput"]] }
     if url?.port == 11434 { return ["reasoning_effort": "none"] } // Ollama 的 /v1 只认 reasoning_effort，不认 think
     if host == "api.openai.com" {
@@ -75,7 +77,46 @@ public func speedParams(_ p: Profile) -> [String: Any] {
     }
     // Claude 新模型默认自适应思考且多数拒绝 disabled，只能把 effort 调到最低；不等于关闭思考
     if p.wire == .anthropic { return ["output_config": ["effort": "low"]] }
+    let m = p.model.lowercased()
+    if m.contains("deepseek") || m.hasPrefix("glm") || m.contains("/glm") || m.contains("kimi") { return off }
+    if m.contains("qwen") { return ["enable_thinking": false] }
     return [:]
+}
+
+/// 默认提速参数的 JSON 文本（排序、缩进），新建 / 迁移服务商时写进「额外请求体 JSON」；没有时为空
+public func speedJSON(_ p: Profile) -> String {
+    let d = speedParams(p)
+    guard !d.isEmpty, let data = try? JSONSerialization.data(withJSONObject: d, options: [.prettyPrinted, .sortedKeys]) else { return "" }
+    return String(decoding: data, as: UTF8.self)
+}
+
+func extraObject(_ p: Profile) -> [String: Any]? {
+    let extra = p.extraJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+    if extra.isEmpty { return [:] }
+    return (try? JSONSerialization.jsonObject(with: Data(extra.utf8))) as? [String: Any]
+}
+
+private func sameJSON(_ a: Any?, _ b: Any) -> Bool {
+    guard let a, let x = try? JSONSerialization.data(withJSONObject: ["v": a], options: .sortedKeys),
+          let y = try? JSONSerialization.data(withJSONObject: ["v": b], options: .sortedKeys) else { return false }
+    return x == y
+}
+
+/// 「额外请求体 JSON」里确实带着这个服务的默认提速参数（用户没删、没改）：输入提示据此判断能否限长
+public func speedApplied(_ p: Profile) -> Bool {
+    let want = speedParams(p)
+    guard !want.isEmpty, let have = extraObject(p) else { return false }
+    return want.allSatisfy { sameJSON(have[$0.key], $0.value) }
+}
+
+/// 已有的额外 JSON 补上缺少的默认提速键（用户写过的键不动）；JSON 不合法时原样返回
+public func withSpeedDefaults(_ p: Profile) -> String {
+    let want = speedParams(p)
+    guard !want.isEmpty, var have = extraObject(p) else { return p.extraJSON }
+    guard want.keys.contains(where: { have[$0] == nil }) else { return p.extraJSON }
+    have.merge(want) { user, _ in user }
+    guard let data = try? JSONSerialization.data(withJSONObject: have, options: [.prettyPrinted, .sortedKeys]) else { return p.extraJSON }
+    return String(decoding: data, as: UTF8.self)
 }
 
 /// 草稿主体语言，标在 <text lang> 上：只靠指令说「用原文语言」时，中文指令下的英文草稿常被译成中文（反之亦然）。
@@ -92,7 +133,7 @@ public func draftLanguage(_ text: String) -> String? {
 
 /// 润色请求：指令作 system，原文包在 <text> 中声明为待润色文本；额外 JSON 按顶层键覆盖默认值。
 /// tagLanguage：在 <text> 上标主体语言（输入提示不需要，拼音会被误标成 en）
-/// speed：带上 speedParams；被服务以 400 拒绝后重试时传 false
+/// 请求体以「额外请求体 JSON」为准（默认提速参数已写在里面）；speed 为 false 时去掉其中的默认提速键（被 400 拒绝后的重试）
 public func makeRequest(_ p: Profile, apiKey: String, text: String, tagLanguage: Bool = true, speed: Bool = true) throws -> URLRequest {
     let lang = tagLanguage ? draftLanguage(text).map { " lang=\"\($0)\"" } ?? "" : ""
     let user = ["role": "user", "content": "<text\(lang)>\n\(text)\n</text>"]
@@ -107,14 +148,9 @@ public func makeRequest(_ p: Profile, apiKey: String, text: String, tagLanguage:
         body["messages"] = [user]
         body["max_tokens"] = 4096
     }
-    if speed { body.merge(speedParams(p)) { _, new in new } }
-    let extra = p.extraJSON.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !extra.isEmpty {
-        guard let obj = (try? JSONSerialization.jsonObject(with: Data(extra.utf8))) as? [String: Any] else {
-            throw RequestError.badExtraJSON("额外请求体必须是 JSON 对象")
-        }
-        body.merge(obj) { _, new in new }
-    }
+    guard var extra = extraObject(p) else { throw RequestError.badExtraJSON("额外请求体必须是 JSON 对象") }
+    if !speed { for k in speedParams(p).keys { extra[k] = nil } }
+    body.merge(extra) { _, new in new }
     var r = URLRequest(url: try endpoint(p, p.wire == .openAI ? "/chat/completions" : "/v1/messages"))
     r.httpMethod = "POST"
     r.setValue("application/json", forHTTPHeaderField: "Content-Type")

@@ -53,7 +53,8 @@ nonisolated(unsafe) var stash: AnyObject?
 // n > 1 时依次发 n 次相同请求（验证输入提示的缓存、失败退避、提速参数被拒后的记忆），每次一行结果
 if CommandLine.arguments.dropFirst().first == "stream" {
     let a = CommandLine.arguments
-    let p = Profile(name: "e2e", preset: "e2e", wire: Wire(rawValue: a[2])!, baseURL: a[3], model: "m", instruction: "润色", extraJSON: "")
+    var p = Profile(name: "e2e", preset: "e2e", wire: Wire(rawValue: a[2])!, baseURL: a[3], model: "m", instruction: "润色", extraJSON: "")
+    p.extraJSON = speedJSON(p) // 与新建服务商一致：默认提速参数写在额外 JSON 里
     let fast = a.count > 4 && a[4] == "fast"
     var left = a.count > 5 ? Int(a[5])! : 1
     MainActor.assumeIsolated {
@@ -139,6 +140,9 @@ do {
 }
 
 // MARK: 请求构造
+
+/// 新建服务商的实际状态：额外 JSON 里写着默认提速参数
+func seeded(_ p: Profile) -> Profile { var q = p; q.extraJSON = speedJSON(p); return q }
 
 func body(_ r: URLRequest) -> [String: Any] {
     (try? JSONSerialization.jsonObject(with: r.httpBody ?? Data())) as? [String: Any] ?? [:]
@@ -342,7 +346,7 @@ do {
     check(firstCandidate(["1", "2", "3"]) == nil && firstCandidate([]) == nil, "没有候选返回 nil")
     check(firstCandidate(["1", "👋", "2", "你好"]) == "👋", "第一候选是表情时照用（用户看到的就是它）")
 
-    var p = Profile(name: "x", preset: "DeepSeek", wire: .openAI, baseURL: "https://api.deepseek.com", model: "m", instruction: "i", extraJSON: "")
+    var p = seeded(Profile(name: "x", preset: "DeepSeek", wire: .openAI, baseURL: "https://api.deepseek.com", model: "m", instruction: "i", extraJSON: ""))
     let b = body(try fastRequest(p, apiKey: "k", text: "你好"))
     check(b["max_tokens"] as? Int == 60 && b["temperature"] as? Double == 0, "输入提示请求限制输出长度、温度 0")
     check((b["messages"] as? [[String: String]])?.last?["content"] == "<text>\n你好\n</text>", "输入提示不标 lang（拼音会被误标成 en）")
@@ -350,12 +354,12 @@ do {
     p.extraJSON = #"{"max_tokens":200}"#
     check(body(try fastRequest(p, apiKey: "k", text: "你好"))["max_tokens"] as? Int == 200, "用户的额外 JSON 仍可覆盖")
 
-    let qwen = Profile(name: "x", preset: "百炼", wire: .openAI, baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "m", instruction: "i", extraJSON: "")
+    let qwen = seeded(Profile(name: "x", preset: "百炼", wire: .openAI, baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "m", instruction: "i", extraJSON: ""))
     check(body(try fastRequest(qwen, apiKey: "k", text: "t"))["enable_thinking"] as? Bool == false, "百炼：enable_thinking=false")
     let other = Profile(name: "x", preset: "自定义", wire: .openAI, baseURL: "https://example.com/v1", model: "m", instruction: "i", extraJSON: "")
     let ob = body(try fastRequest(other, apiKey: "k", text: "t"))
     check(ob["max_tokens"] == nil && ob["thinking"] == nil && ob["temperature"] as? Double == 0, "未知服务：不限长、不发方言参数（防推理模型空结果 / 报错），只设温度 0")
-    let claude = Profile(name: "x", preset: "Anthropic", wire: .anthropic, baseURL: "https://api.anthropic.com", model: "m", instruction: "i", extraJSON: "")
+    let claude = seeded(Profile(name: "x", preset: "Anthropic", wire: .anthropic, baseURL: "https://api.anthropic.com", model: "m", instruction: "i", extraJSON: ""))
     let cb = body(try fastRequest(claude, apiKey: "k", text: "t"))
     check(cb["max_tokens"] as? Int == 4096 && cb["thinking"] == nil && cb["temperature"] == nil && (cb["output_config"] as? [String: String]) == ["effort": "low"],
           "Anthropic：新模型默认自适应思考、拒绝 disabled 和自定义温度：只降 effort，不限长、不设温度")
@@ -365,7 +369,7 @@ do {
 // MARK: ⌥P 润色也默认关闭思考（实测 deepseek-flash 首字 1243ms → 633ms）
 
 do {
-    let ds = Profile(name: "x", preset: "DeepSeek", wire: .openAI, baseURL: "https://api.deepseek.com", model: "m", instruction: "i", extraJSON: "")
+    let ds = seeded(Profile(name: "x", preset: "DeepSeek", wire: .openAI, baseURL: "https://api.deepseek.com", model: "m", instruction: "i", extraJSON: ""))
     let b = body(try makeRequest(ds, apiKey: "k", text: "t"))
     check((b["thinking"] as? [String: String]) == ["type": "disabled"] && b["max_tokens"] == nil, "润色：DeepSeek 关闭思考，但不限长（润色结果可能很长）")
     var keep = ds
@@ -631,7 +635,7 @@ do {
 
 do {
     func conn(_ url: String, _ model: String = "m", _ wire: Wire = .openAI) -> Profile {
-        Profile(name: "x", preset: "x", wire: wire, baseURL: url, model: model, instruction: "i", extraJSON: "")
+        seeded(Profile(name: "x", preset: "x", wire: wire, baseURL: url, model: model, instruction: "i", extraJSON: ""))
     }
     let off = ["type": "disabled"]
     for u in ["https://open.bigmodel.cn/api/paas/v4", "https://api.z.ai/api/paas/v4", "https://ark.cn-beijing.volces.com/api/v3", "https://api.moonshot.cn/v1"] {
@@ -653,6 +657,37 @@ do {
     check(plain["thinking"] == nil, "被 400 拒绝后重试：不带提速参数")
     let fplain = body(try fastRequest(conn("https://api.moonshot.cn/v1"), apiKey: "k", text: "t", speed: false))
     check(fplain["thinking"] == nil && fplain["max_tokens"] == nil && fplain["temperature"] == nil, "输入提示重试：限长、温度、方言参数都去掉")
+
+    // 提速参数显式写在额外 JSON 里，是请求体的唯一来源
+    let bare = Profile(name: "x", preset: "x", wire: .openAI, baseURL: "https://api.deepseek.com", model: "m", instruction: "i", extraJSON: "")
+    check(body(try makeRequest(bare, apiKey: "k", text: "t"))["thinking"] == nil, "额外 JSON 里删掉了提速参数：请求里就不带")
+    check(speedJSON(bare) == "{\n  \"thinking\" : {\n    \"type\" : \"disabled\"\n  }\n}" && speedJSON(conn("https://example.com/v1")).isEmpty, "默认提速参数写成排好版的 JSON；未知服务为空")
+    check(Provider(presets[2]).extraJSON == speedJSON(Provider(presets[2]).profile()) && !Provider(presets[2]).extraJSON.isEmpty, "新建服务商自带默认提速 JSON")
+    var userExtra = bare; userExtra.extraJSON = #"{"temperature":0.3,"thinking":{"type":"enabled"}}"#
+    let merged2 = (try? JSONSerialization.jsonObject(with: Data(withSpeedDefaults(userExtra).utf8))) as? [String: Any]
+    check((merged2?["thinking"] as? [String: String]) == ["type": "enabled"] && merged2?["temperature"] as? Double == 0.3, "迁移补默认键：用户写过的键不覆盖")
+    check((((try? JSONSerialization.jsonObject(with: Data(withSpeedDefaults(bare).utf8))) as? [String: Any])?["thinking"] as? [String: String]) == ["type": "disabled"], "迁移补默认键：空 JSON 补上")
+    var bad = bare; bad.extraJSON = "{oops"
+    check(withSpeedDefaults(bad) == "{oops", "迁移补默认键：不合法的 JSON 原样保留")
+    check(!speedApplied(userExtra) && fastOverrides(userExtra)["max_tokens"] == nil, "用户在 JSON 里打开了思考：输入提示不限长（防思考吃光额度）")
+    var both = conn("https://api.deepseek.com"); both.extraJSON = #"{"thinking":{"type":"disabled"},"temperature":0.2}"#
+    let retry = body(try makeRequest(both, apiKey: "k", text: "t", speed: false))
+    check(retry["thinking"] == nil && retry["temperature"] as? Double == 0.2, "400 重试：只去掉提速键，用户的其他键照常发送")
+    let oa = Provider(name: "o", preset: "OpenAI", wire: .openAI, baseURL: "https://api.openai.com/v1", model: "gpt-5", extraJSON: speedJSON(conn("https://api.openai.com/v1", "gpt-5")))
+    var oa2 = oa; oa2.model = "gpt-5.2"
+    check(retuned(oa, oa2).extraJSON.contains("\"none\""), "改模型：额外 JSON 还是默认值时跟着换（gpt-5 minimal → gpt-5.2 none）")
+    var oaUser = oa; oaUser.extraJSON = #"{"reasoning_effort":"high"}"#
+    var oaUser2 = oaUser; oaUser2.model = "gpt-5.2"
+    check(retuned(oaUser, oaUser2).extraJSON == oaUser.extraJSON, "改模型：用户改过的额外 JSON 不动")
+    var ds2 = Provider(presets[2]); let ds3 = { var x = ds2; x.baseURL = "https://example.com/v1"; x.model = "llama-3"; return x }()
+    check(retuned(ds2, ds3).extraJSON.isEmpty, "换成未知服务：默认提速 JSON 清空")
+    ds2.extraJSON = ""
+    check(retuned(ds2, ds2).extraJSON == ds2.extraJSON, "连接没变：不动")
+    check(speedParams(conn("https://ws-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "qwen-flash"))["enable_thinking"] as? Bool == false, "百炼专属域名：enable_thinking=false")
+    check(speedParams(conn("https://tokenhub.tencentmaas.com/v1", "deepseek-v4.1-flash"))["thinking"] != nil
+          && speedParams(conn("https://x.test/v1", "Qwen/Qwen3-8B"))["enable_thinking"] as? Bool == false
+          && speedParams(conn("https://x.test/v1", "GLM-4-Flash"))["thinking"] != nil
+          && speedParams(conn("https://x.test/v1", "llama-3")).isEmpty, "域名认不出：按模型名（聚合服务转发的 deepseek / qwen / glm）")
 
     let v = Provider(name: "我的 Kimi", preset: "Kimi", wire: .openAI, baseURL: "https://api.moonshot.cn/v1", model: "kimi-x", extraJSON: "{}")
     let scene = conn("https://api.deepseek.com", "old")

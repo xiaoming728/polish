@@ -112,7 +112,7 @@ public final class Polisher {
         req.timeoutInterval = 120 // 空闲超时兜底；首字与总时长由 start() 的看门狗控制
         let (bytes, resp) = try await URLSession.shared.bytes(for: req)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        if status == 400 && speed && !(fast ? fastOverrides(p) : speedParams(p)).isEmpty {
+        if status == 400 && speed && (speedApplied(p) || (fast && !fastOverrides(p).isEmpty)) {
             let out = try await stream(p, apiKey: apiKey, text: text, fast: fast, speed: false, onDelta: onDelta)
             speedRejected.insert(conn) // 只在去掉后成功时记下：别的原因的 400 不能让之后的请求都丢掉关思考
             return out

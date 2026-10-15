@@ -176,8 +176,8 @@ public func translateInstruction(_ lang: TypingLanguage) -> String { """
 public func fastOverrides(_ p: Profile, speed: Bool = true) -> [String: Any] {
     guard speed else { return [:] }
     let host = URL(string: p.baseURL.trimmingCharacters(in: .whitespaces))?.host ?? ""
-    var out = speedParams(p)
-    if !out.isEmpty && out["output_config"] == nil { out["max_tokens"] = 60 }
+    var out: [String: Any] = [:]
+    if speedApplied(p) && speedParams(p)["output_config"] == nil { out["max_tokens"] = 60 } // 用户在 JSON 里删了 / 改了关思考：不限长
     if p.wire != .anthropic && !host.contains("moonshot") { out["temperature"] = 0 }
     return out
 }
