@@ -315,7 +315,8 @@ do {
     check(ob["max_tokens"] == nil && ob["thinking"] == nil && ob["temperature"] as? Double == 0, "未知服务：不限长、不发方言参数（防推理模型空结果 / 报错），只设温度 0")
     let claude = Profile(name: "x", preset: "Anthropic", wire: .anthropic, baseURL: "https://api.anthropic.com", model: "m", instruction: "i", extraJSON: "")
     let cb = body(try fastRequest(claude, apiKey: "k", text: "t"))
-    check(cb["max_tokens"] as? Int == 60 && cb["thinking"] == nil, "Anthropic：默认不思考，直接限长")
+    check(cb["max_tokens"] as? Int == 4096 && cb["thinking"] == nil && cb["temperature"] == nil && (cb["output_config"] as? [String: String]) == ["effort": "low"],
+          "Anthropic：新模型默认自适应思考、拒绝 disabled 和自定义温度：只降 effort，不限长、不设温度")
     check(translateInstruction(.english).contains("<text>") && !translateInstruction(.english).contains("JSON"), "翻译指令只要译文，不要 JSON")
 }
 
@@ -573,6 +574,45 @@ do {
     check(replaceDeletes(before: "前文我爱 ", committed: "我爱", pinyinKeys: 0) == nil, "没有组合态时不容忍任何多余字符")
     check(replaceDeletes(before: "前文", committed: "", pinyinKeys: 3) == 0 && replaceDeletes(before: "", committed: "我爱", pinyinKeys: 0) == nil, "只有拼音时不删已上屏的字；空输入框不删")
     check(replaceDeletes(before: nil, committed: "我爱", pinyinKeys: 6) == 2, "读不到 AX：按本句字数删（拼音另由 Esc 撤销）")
+}
+
+// MARK: 各服务默认关闭思考 / 提速；服务商与场景分离
+
+do {
+    func conn(_ url: String, _ model: String = "m", _ wire: Wire = .openAI) -> Profile {
+        Profile(name: "x", preset: "x", wire: wire, baseURL: url, model: model, instruction: "i", extraJSON: "")
+    }
+    let off = ["type": "disabled"]
+    for u in ["https://open.bigmodel.cn/api/paas/v4", "https://api.z.ai/api/paas/v4", "https://ark.cn-beijing.volces.com/api/v3", "https://api.moonshot.cn/v1"] {
+        check((body(try makeRequest(conn(u), apiKey: "k", text: "t"))["thinking"] as? [String: String]) == off, "关闭思考：\(u)")
+    }
+    check(body(try makeRequest(conn("https://api.siliconflow.cn/v1"), apiKey: "k", text: "t"))["enable_thinking"] as? Bool == false, "硅基流动：enable_thinking=false")
+    let or = body(try makeRequest(conn("https://openrouter.ai/api/v1"), apiKey: "k", text: "t"))
+    check((or["reasoning"] as? [String: String]) == ["effort": "none"] && (or["provider"] as? [String: String]) == ["sort": "throughput"], "OpenRouter：关推理 + 按吞吐选路")
+    check(body(try makeRequest(conn("http://localhost:11434/v1"), apiKey: "k", text: "t"))["reasoning_effort"] as? String == "none", "Ollama：reasoning_effort=none")
+    check(body(try makeRequest(conn("http://localhost:1234/v1"), apiKey: "k", text: "t"))["reasoning_effort"] == nil, "LM Studio：不发方言参数")
+    check(speedParams(conn("https://api.openai.com/v1", "gpt-5.2"))["reasoning_effort"] as? String == "none"
+          && speedParams(conn("https://api.openai.com/v1", "gpt-5-mini"))["reasoning_effort"] as? String == "minimal"
+          && speedParams(conn("https://api.openai.com/v1", "o4-mini"))["reasoning_effort"] as? String == "low"
+          && speedParams(conn("https://api.openai.com/v1", "gpt-4o")).isEmpty, "OpenAI：按模型选最低推理档，非推理模型不发")
+    check(speedParams(conn("https://api.deepseek.com/anthropic", "m", .anthropic))["thinking"] != nil, "Anthropic 协议的国内服务按服务名关闭思考")
+    let kimi = body(try fastRequest(conn("https://api.moonshot.cn/v1"), apiKey: "k", text: "t"))
+    check(kimi["temperature"] == nil && kimi["max_tokens"] as? Int == 60, "Kimi：非思考模式温度固定，不设温度 0；思考已关可限长")
+    let plain = body(try makeRequest(conn("https://api.deepseek.com"), apiKey: "k", text: "t", speed: false))
+    check(plain["thinking"] == nil, "被 400 拒绝后重试：不带提速参数")
+    let fplain = body(try fastRequest(conn("https://api.moonshot.cn/v1"), apiKey: "k", text: "t", speed: false))
+    check(fplain["thinking"] == nil && fplain["max_tokens"] == nil && fplain["temperature"] == nil, "输入提示重试：限长、温度、方言参数都去掉")
+
+    let v = Provider(name: "我的 Kimi", preset: "Kimi", wire: .openAI, baseURL: "https://api.moonshot.cn/v1", model: "kimi-x", extraJSON: "{}")
+    let scene = conn("https://api.deepseek.com", "old")
+    let used = scene.using(v)
+    check(used.id == scene.id && used.name == scene.name && used.instruction == scene.instruction, "场景套用服务商：保留 id、名称、指令")
+    check(used.baseURL == v.baseURL && used.model == "kimi-x" && used.preset == "Kimi" && used.extraJSON == "{}", "场景套用服务商：连接全部换成服务商的")
+    check(keyAccount(used) == keyAccount(v.profile()), "Key 跟着服务商走")
+    let old = sceneProfiles(base: conn("https://api.deepseek.com", "a")) + [conn("https://api.deepseek.com", "b"), conn("https://api.moonshot.cn/v1", "a")]
+    let migrated = migrateProviders(old)
+    check(migrated.map(\.model) == ["a", "b", "a"] && migrated.map(\.baseURL).last == "https://api.moonshot.cn/v1", "旧版场景按连接去重迁移成服务商")
+    check(defaultProvider().preset == "DeepSeek" && defaultProfile().baseURL == defaultProvider().baseURL, "默认服务商与默认场景连接一致")
 }
 
 print(failures == 0 ? "\n全部通过" : "\n\(failures) 项失败")

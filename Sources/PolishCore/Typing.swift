@@ -172,23 +172,24 @@ public func translateInstruction(_ lang: TypingLanguage) -> String { """
 """ }
 
 /// 输入提示的提速参数（消融实测 deepseek-flash 热连接：基线 1044ms → 候选词翻译 + 关闭思考 459ms）。
-/// 关思考的字段是各家方言，只对已知服务发送；推理模型开着思考时 max_tokens 会被思考耗尽、正文为空，
-/// 所以无法确认能关思考的服务不限长
-public func fastOverrides(_ p: Profile) -> [String: Any] {
-    let off = noThinking(p)
-    if !off.isEmpty || p.wire == .anthropic { // Anthropic 不传 thinking 即不思考
-        return off.merging(["max_tokens": 60, "temperature": 0]) { a, _ in a }
-    }
-    return ["temperature": 0]
+/// 推理模型开着思考时 max_tokens 会被思考耗尽、正文为空，所以只给确认关掉思考的服务限长
+/// （Anthropic 的 effort low 仍可能思考，不算）；Claude 新模型和 Kimi 不接受自定义温度，不设温度 0
+public func fastOverrides(_ p: Profile, speed: Bool = true) -> [String: Any] {
+    guard speed else { return [:] }
+    let host = URL(string: p.baseURL.trimmingCharacters(in: .whitespaces))?.host ?? ""
+    var out = speedParams(p)
+    if !out.isEmpty && out["output_config"] == nil { out["max_tokens"] = 60 }
+    if p.wire != .anthropic && !host.contains("moonshot") { out["temperature"] = 0 }
+    return out
 }
 
 /// 输入提示用的请求：叠加 fastOverrides；用户的「额外请求体 JSON」仍可覆盖
-public func fastRequest(_ p: Profile, apiKey: String, text: String) throws -> URLRequest {
+public func fastRequest(_ p: Profile, apiKey: String, text: String, speed: Bool = true) throws -> URLRequest {
     var q = p
     let user = (try? JSONSerialization.jsonObject(with: Data(p.extraJSON.utf8))) as? [String: Any] ?? [:]
-    let merged = fastOverrides(p).merging(user) { _, u in u }
+    let merged = fastOverrides(p, speed: speed).merging(user) { _, u in u }
     q.extraJSON = String(decoding: try JSONSerialization.data(withJSONObject: merged), as: UTF8.self)
-    return try makeRequest(q, apiKey: apiKey, text: text, tagLanguage: false)
+    return try makeRequest(q, apiKey: apiKey, text: text, tagLanguage: false, speed: speed)
 }
 
 /// 从 macOS「牛津英汉汉英词典」的纯文本释义里取第一个英文义项，取不到返回 nil（交给模型翻译）。

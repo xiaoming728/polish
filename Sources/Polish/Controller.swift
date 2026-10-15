@@ -163,13 +163,19 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
         let busy = polisher.busy
         menu.addItem(ActionItem(busy ? "取消润色（\(state.hotKey.name)）" : "润色选中文字（\(state.hotKey.name)）") { [weak self] in self?.trigger() })
         menu.addItem(.separator())
-        let header = NSMenuItem(title: "当前配置", action: nil, keyEquivalent: "")
+        let header = NSMenuItem(title: "当前场景", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
         for p in state.profiles {
-            let model = p.model.isEmpty ? "未填模型" : p.model
-            menu.addItem(ActionItem("\(p.name)  ·  \(p.preset) / \(model)", on: p.id == state.currentID) { [weak self] in self?.state.currentID = p.id })
+            menu.addItem(ActionItem(p.name, on: p.id == state.currentID) { [weak self] in self?.state.currentID = p.id })
         }
+        let vs = NSMenuItem(title: "服务商：\(state.provider.name)", action: nil, keyEquivalent: "")
+        vs.submenu = NSMenu()
+        for v in state.providers {
+            let model = v.model.isEmpty ? "未填模型" : v.model
+            vs.submenu!.addItem(ActionItem("\(v.name)  ·  \(model)", on: v.id == state.providerID) { [weak self] in self?.state.providerID = v.id })
+        }
+        menu.addItem(vs)
         menu.addItem(.separator())
         let fill = NSMenuItem(title: "回填方式", action: nil, keyEquivalent: "")
         fill.submenu = NSMenu()
@@ -356,7 +362,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindo
         let key = KeyStore.apiKey(p)
         let local = ["localhost", "127.0.0.1", "::1"].contains(URL(string: p.baseURL)?.host ?? "")
         if key.isEmpty && !local {
-            fail(tr("配置「\(p.name)」还没有填写 API Key。按 ⌘, 打开设置。", "Profile “\(p.name)” has no API key yet. Press ⌘, to open Settings."))
+            fail(tr("服务商「\(state.provider.name)」还没有填写 API Key。按 ⌘, 打开设置。", "Provider “\(state.provider.name)” has no API key yet. Press ⌘, to open Settings."))
             return
         }
         if effectiveMode == .preview {

@@ -42,7 +42,7 @@ struct GuideView: View {
                 }.padding(.leading, 28)
             }
             row(hasKey, tr("2  填写 API Key", "2  Enter an API Key"),
-                tr("设置 → 配置：选服务商、填 Key，再点「测试连接」", "Settings → Profiles: pick a provider, enter the key, then click “Test Connection”"),
+                tr("设置 → 服务商：选服务商、填 Key，再点「测试连接」", "Settings → Providers: pick a provider, enter the key, then click “Test Connection”"),
                 button: tr("去配置", "Configure")) { openSettings(0) }
 
             section(tr("可选", "Optional"))

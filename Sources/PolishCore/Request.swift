@@ -46,12 +46,24 @@ func authorize(_ r: inout URLRequest, _ p: Profile, _ apiKey: String) {
     }
 }
 
-/// 关闭思考的方言参数，只对已知服务发送（未知服务乱发会报错）。
-/// 润色和输入提示都不需要推理；实测 deepseek-flash 润色首字 1243ms → 633ms。用户可用「额外请求体 JSON」重新打开
-public func noThinking(_ p: Profile) -> [String: Any] {
-    let host = URL(string: p.baseURL.trimmingCharacters(in: .whitespaces))?.host ?? ""
-    if host.hasSuffix("deepseek.com") { return ["thinking": ["type": "disabled"]] }
-    if host.contains("dashscope") { return ["enable_thinking": false] }
+/// 提速参数（关闭思考 / 最低推理档 / 按吞吐选路），只对已知服务发送（未知服务乱发会报错）。
+/// 润色和输入提示都不需要推理；实测 deepseek-flash 润色首字 1243ms → 633ms。用户可用「额外请求体 JSON」覆盖。
+/// 强制思考的模型（GLM-5.3、部分 Kimi / OpenRouter 模型等）会以 400 拒绝，由 Polisher.stream 去掉这些参数重试一次
+public func speedParams(_ p: Profile) -> [String: Any] {
+    let url = URL(string: p.baseURL.trimmingCharacters(in: .whitespaces))
+    let host = url?.host ?? ""
+    let off: [String: Any] = ["thinking": ["type": "disabled"]]
+    if ["deepseek.com", "bigmodel.cn", "z.ai", "volces.com", "moonshot.cn", "moonshot.ai"].contains(where: { host.hasSuffix($0) }) { return off }
+    if host.contains("dashscope") || host.hasSuffix("siliconflow.cn") || host.hasSuffix("siliconflow.com") { return ["enable_thinking": false] }
+    if host.hasSuffix("openrouter.ai") { return ["reasoning": ["effort": "none"], "provider": ["sort": "throughput"]] }
+    if url?.port == 11434 { return ["reasoning_effort": "none"] } // Ollama 的 /v1 只认 reasoning_effort，不认 think
+    if host == "api.openai.com" {
+        if p.model.hasPrefix("gpt-5.") { return ["reasoning_effort": "none"] }
+        if p.model.hasPrefix("gpt-5") { return ["reasoning_effort": "minimal"] } // gpt-5 初版没有 none
+        if p.model.first == "o", p.model.dropFirst().first?.isNumber == true { return ["reasoning_effort": "low"] }
+    }
+    // Claude 新模型默认自适应思考且多数拒绝 disabled，只能把 effort 调到最低；不等于关闭思考
+    if p.wire == .anthropic { return ["output_config": ["effort": "low"]] }
     return [:]
 }
 
@@ -69,7 +81,8 @@ public func draftLanguage(_ text: String) -> String? {
 
 /// 润色请求：指令作 system，原文包在 <text> 中声明为待润色文本；额外 JSON 按顶层键覆盖默认值。
 /// tagLanguage：在 <text> 上标主体语言（输入提示不需要，拼音会被误标成 en）
-public func makeRequest(_ p: Profile, apiKey: String, text: String, tagLanguage: Bool = true) throws -> URLRequest {
+/// speed：带上 speedParams；被服务以 400 拒绝后重试时传 false
+public func makeRequest(_ p: Profile, apiKey: String, text: String, tagLanguage: Bool = true, speed: Bool = true) throws -> URLRequest {
     let lang = tagLanguage ? draftLanguage(text).map { " lang=\"\($0)\"" } ?? "" : ""
     let user = ["role": "user", "content": "<text\(lang)>\n\(text)\n</text>"]
     var body: [String: Any] = ["model": p.model, "stream": true]
@@ -81,7 +94,7 @@ public func makeRequest(_ p: Profile, apiKey: String, text: String, tagLanguage:
         body["messages"] = [user]
         body["max_tokens"] = 4096
     }
-    body.merge(noThinking(p)) { _, new in new }
+    if speed { body.merge(speedParams(p)) { _, new in new } }
     let extra = p.extraJSON.trimmingCharacters(in: .whitespacesAndNewlines)
     if !extra.isEmpty {
         guard let obj = (try? JSONSerialization.jsonObject(with: Data(extra.utf8))) as? [String: Any] else {

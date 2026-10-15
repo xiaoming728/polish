@@ -12,7 +12,7 @@ public struct PolishError: LocalizedError {
     public var errorDescription: String? { message }
 }
 
-/// 单个流式润色请求。首字（无数据）超时 30s，总计 120s；不自动重试。
+/// 单个流式润色请求。首字（无数据）超时 30s，总计 120s；只在提速参数被 400 拒绝时重试一次（见 stream）。
 @MainActor
 public final class Polisher {
     public init() {}
@@ -78,11 +78,15 @@ public final class Polisher {
     }
 
     /// fast：输入提示这类短结果，用 fastRequest（限长、温度 0）
-    public static func stream(_ p: Profile, apiKey: String, text: String, fast: Bool = false, onDelta: @escaping (String) -> Void) async throws -> String {
-        var req = try fast ? fastRequest(p, apiKey: apiKey, text: text) : makeRequest(p, apiKey: apiKey, text: text)
+    /// speed：带提速参数；强制思考的模型以 400 拒绝时去掉提速参数重试一次（用户的额外 JSON 照常带上）
+    public static func stream(_ p: Profile, apiKey: String, text: String, fast: Bool = false, speed: Bool = true, onDelta: @escaping (String) -> Void) async throws -> String {
+        var req = try fast ? fastRequest(p, apiKey: apiKey, text: text, speed: speed) : makeRequest(p, apiKey: apiKey, text: text, speed: speed)
         req.timeoutInterval = 120 // 空闲超时兜底；首字与总时长由 start() 的看门狗控制
         let (bytes, resp) = try await URLSession.shared.bytes(for: req)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 400 && speed && !(fast ? fastOverrides(p) : speedParams(p)).isEmpty {
+            return try await stream(p, apiKey: apiKey, text: text, fast: fast, speed: false, onDelta: onDelta)
+        }
         guard (200..<300).contains(status) else {
             var body = ""
             for try await line in bytes.lines {

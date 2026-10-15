@@ -204,7 +204,8 @@ struct SettingsView: View {
     let rebind: (HotKeySpec) -> Bool
     var body: some View {
         TabView(selection: $state.settingsTab) {
-            ProfilesTab(state: state).tabItem { Label(tr("配置", "Profiles"), systemImage: "slider.horizontal.3") }.tag(0)
+            ProvidersTab(state: state).tabItem { Label(tr("服务商", "Providers"), systemImage: "server.rack") }.tag(0)
+            ProfilesTab(state: state).tabItem { Label(tr("场景", "Profiles"), systemImage: "slider.horizontal.3") }.tag(5)
             GeneralTab(state: state, rebind: rebind).tabItem { Label(tr("通用", "General"), systemImage: "gearshape") }.tag(1)
             TerminalTab(state: state).tabItem { Label(tr("终端集成", "Terminal"), systemImage: "terminal") }.tag(2)
             UsageTab().tabItem { Label(tr("使用统计", "Usage"), systemImage: "chart.bar") }.tag(3)
@@ -216,14 +217,10 @@ struct SettingsView: View {
     }
 }
 
+/// 场景：名称 + 润色指令（⌘1–9 切换）；连接用「服务商」页当前选中的服务商
 struct ProfilesTab: View {
     @ObservedObject var state: AppState
     @State var sel: UUID?
-    @State var key = ""
-    @State var showKey = false
-    @State var models: [String] = []
-    @State var status = ""
-    @State var busy = false
 
     var index: Int? { state.profiles.firstIndex { $0.id == (sel ?? state.currentID) } }
 
@@ -240,7 +237,7 @@ struct ProfilesTab: View {
                     }
                 }
                 HStack {
-                    Button { // 复制当前选中配置的服务连接，Key 自动共用
+                    Button {
                         var p = state.profiles[index ?? 0]
                         p.id = UUID()
                         p.name = tr("新配置", "New Profile")
@@ -261,71 +258,132 @@ struct ProfilesTab: View {
             }.frame(width: 200)
             Divider()
             if let i = index {
+                Form {
+                    TextField(tr("名称", "Name"), text: $state.profiles[i].name)
+                    LabeledContent(tr("服务商", "Provider")) {
+                        Button("\(state.provider.name) / \(state.provider.model.isEmpty ? tr("未填模型", "no model") : state.provider.model)") { state.settingsTab = 0 }
+                            .buttonStyle(.link).help(tr("所有场景共用当前服务商，到「服务商」页切换", "All profiles share the current provider; switch it on the Providers tab"))
+                    }
+                    Section(tr("润色指令", "Polish Instruction")) {
+                        TextEditor(text: $state.profiles[i].instruction).font(.system(size: 12)).frame(height: 260)
+                        Button(tr("恢复默认指令", "Restore Default Instruction")) { state.profiles[i].instruction = scenes(english: uiEnglish())[0].instruction }
+                    }
+                }.formStyle(.grouped)
+            }
+        }
+        .onAppear { if sel == nil { sel = state.currentID } }
+    }
+}
+
+/// 服务商列表：连接、Key、模型、额外 JSON；所有场景共用当前选中的一个
+struct ProvidersTab: View {
+    @ObservedObject var state: AppState
+    @State var sel: UUID?
+    @State var key = ""
+    @State var showKey = false
+    @State var models: [String] = []
+    @State var status = ""
+    @State var busy = false
+
+    var index: Int? { state.providers.firstIndex { $0.id == (sel ?? state.providerID) } }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                List(selection: $sel) {
+                    ForEach(state.providers) { v in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(v.name)
+                                Text(v.model.isEmpty ? tr("未填模型", "No model") : v.model).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if v.id == state.providerID { Image(systemName: "checkmark").foregroundStyle(.secondary) }
+                        }.tag(Optional(v.id))
+                    }
+                }
+                HStack {
+                    Button { // 新建默认服务商，再在右侧选预设
+                        let v = defaultProvider()
+                        state.providers.append(v)
+                        sel = v.id
+                    } label: { Image(systemName: "plus") }
+                    Button {
+                        guard let i = index, state.providers.count > 1 else { return }
+                        let id = state.providers[i].id
+                        state.providers.remove(at: i)
+                        if state.providerID == id { state.providerID = state.providers[0].id }
+                        sel = state.providerID
+                    } label: { Image(systemName: "minus") }.disabled(state.providers.count <= 1)
+                    Spacer()
+                    Button(tr("设为当前", "Set as Current")) { if let s = sel { state.providerID = s } }.disabled(sel == nil || sel == state.providerID)
+                }.padding(6)
+            }.frame(width: 200)
+            Divider()
+            if let i = index {
                 form(i)
             }
         }
-        .onAppear { if sel == nil { sel = state.currentID }; loadKey() }
+        .onAppear { if sel == nil { sel = state.providerID }; loadKey() }
         .onChange(of: sel) { _, _ in loadKey(); models = []; status = "" }
     }
 
     func loadKey() {
-        if let i = index { key = KeyStore.apiKey(state.profiles[i]) }
+        if let i = index { key = KeyStore.apiKey(state.providers[i].profile()) }
     }
 
     func form(_ i: Int) -> some View {
         Form {
-            TextField(tr("名称", "Name"), text: $state.profiles[i].name)
-            Picker(tr("服务商", "Provider"), selection: $state.profiles[i].preset) {
+            TextField(tr("名称", "Name"), text: $state.providers[i].name)
+            Picker(tr("服务商", "Provider"), selection: $state.providers[i].preset) {
                 ForEach(presets, id: \.name) { Text($0.name).tag($0.name) }
             }
-            .onChange(of: state.profiles[i].preset) { _, new in
+            .onChange(of: state.providers[i].preset) { old, new in
                 guard let p = presets.first(where: { $0.name == new }) else { return }
-                state.profiles[i].wire = p.wire
-                if !p.baseURL.isEmpty { state.profiles[i].baseURL = p.baseURL }
-                state.profiles[i].model = p.model
+                if state.providers[i].name == old { state.providers[i].name = new } // 没改过的名称跟着预设走
+                state.providers[i].wire = p.wire
+                if !p.baseURL.isEmpty { state.providers[i].baseURL = p.baseURL }
+                state.providers[i].model = p.model
             }
-            Picker(tr("协议", "Protocol"), selection: $state.profiles[i].wire) {
+            Picker(tr("协议", "Protocol"), selection: $state.providers[i].wire) {
                 Text(tr("OpenAI 兼容", "OpenAI compatible")).tag(Wire.openAI)
                 Text("Anthropic").tag(Wire.anthropic)
             }
-            TextField("Base URL", text: $state.profiles[i].baseURL)
-                .onChange(of: state.profiles[i].baseURL) { _, _ in loadKey() } // Key 跟着服务走
+            TextField("Base URL", text: $state.providers[i].baseURL)
+                .onChange(of: state.providers[i].baseURL) { _, _ in loadKey() } // Key 跟着服务走
             LabeledContent("API Key") {
                 HStack {
                     // 密码框禁止向外复制（系统行为）；需要查看或复制时切到明文
                     if showKey { TextField("", text: $key) } else { SecureField("", text: $key) }
                     Button { showKey.toggle() } label: { Image(systemName: showKey ? "eye.slash" : "eye") }
                         .buttonStyle(.borderless).help(showKey ? tr("隐藏", "Hide") : tr("显示", "Show"))
-                    Text(tr("同一服务的场景共用", "Shared by profiles of the same service")).font(.caption).foregroundStyle(.secondary)
+                    Text(tr("同一 Base URL 共用", "Shared by the same Base URL")).font(.caption).foregroundStyle(.secondary)
                 }
                 .onChange(of: key) { _, v in
-                    guard v != KeyStore.apiKey(state.profiles[i]) else { return } // 切换配置时的载入不算修改
-                    if !KeyStore.set(keyAccount(state.profiles[i]), v) { status = tr("✗ API Key 保存失败", "✗ Failed to save API Key") }
+                    let p = state.providers[i].profile()
+                    guard v != KeyStore.apiKey(p) else { return } // 切换服务商时的载入不算修改
+                    if !KeyStore.set(keyAccount(p), v) { status = tr("✗ API Key 保存失败", "✗ Failed to save API Key") }
                 }
             }
             LabeledContent(tr("模型", "Model")) {
                 HStack {
-                    TextField("", text: $state.profiles[i].model)
+                    TextField("", text: $state.providers[i].model)
                     Menu(tr("从 /models 拉取", "Fetch from /models")) {
                         if models.isEmpty { Text(tr("（暂无，点「刷新列表」）", "(None yet, click “Refresh List”)")) }
-                        ForEach(models, id: \.self) { m in Button(m) { state.profiles[i].model = m } }
+                        ForEach(models, id: \.self) { m in Button(m) { state.providers[i].model = m } }
                         Divider()
                         Button(tr("刷新列表", "Refresh List")) {
                             Task {
                                 status = tr("拉取中…", "Fetching…")
-                                models = await Polisher.fetchModels(state.profiles[i], apiKey: key)
+                                models = await Polisher.fetchModels(state.providers[i].profile(), apiKey: key)
                                 status = models.isEmpty ? tr("该服务没有提供模型列表，请手动填写", "This service provides no model list; enter one manually") : tr("已拉取 \(models.count) 个模型", "Fetched \(models.count) models")
                             }
                         }
                     }.fixedSize()
                 }
             }
-            Section(tr("润色指令", "Polish Instruction")) {
-                TextEditor(text: $state.profiles[i].instruction).font(.system(size: 12)).frame(height: 110)
-                Button(tr("恢复默认指令", "Restore Default Instruction")) { state.profiles[i].instruction = scenes(english: uiEnglish())[0].instruction }
-            }
-            Section(tr("额外请求体 JSON（可选，按顶层键合并，写各家方言参数）", "Extra request body JSON (optional, merged by top-level key, for provider-specific parameters)")) {
-                TextEditor(text: $state.profiles[i].extraJSON).font(.system(size: 11, design: .monospaced)).frame(height: 50)
+            Section(tr("额外请求体 JSON（可选，按顶层键合并，可覆盖默认的关闭思考等提速参数）", "Extra request body JSON (optional, merged by top-level key; overrides the default speed settings such as thinking off)")) {
+                TextEditor(text: $state.providers[i].extraJSON).font(.system(size: 11, design: .monospaced)).frame(height: 50)
             }
             HStack {
                 Button(tr("测试连接", "Test Connection")) { test(i) }.disabled(busy)
@@ -336,7 +394,7 @@ struct ProfilesTab: View {
     }
 
     func test(_ i: Int) {
-        let p = state.profiles[i]
+        let p = state.providers[i].profile(instruction: defaultInstruction)
         busy = true
         status = tr("测试中…", "Testing…")
         let start = Date()

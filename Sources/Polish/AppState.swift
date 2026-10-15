@@ -60,8 +60,11 @@ enum Phase: Equatable {
 final class AppState: ObservableObject {
     private let defaults = UserDefaults.standard
 
+    /// 场景：只用名称和指令；连接字段是旧版遗留，请求时由当前服务商覆盖（见 current）
     @Published var profiles: [Profile] { didSet { save() } }
     @Published var currentID: UUID { didSet { save() } }
+    @Published var providers: [Provider] { didSet { save() } }
+    @Published var providerID: UUID { didSet { save() } }
     @Published var fillMode: FillMode { didSet { save() } }
     @Published var hotKey: HotKeySpec { didSet { save() } }
     /// 输入时中英提示（中文输入法下敲拼音时显示 ⌥1 英文 / ⌥2 中文）
@@ -96,7 +99,8 @@ final class AppState: ObservableObject {
     @Published var copyOnly = false
 
     var native: TypingLanguage { nativeLanguage ?? .system() }
-    var current: Profile { profiles.first { $0.id == currentID } ?? profiles[0] }
+    var provider: Provider { providers.first { $0.id == providerID } ?? providers[0] }
+    var current: Profile { (profiles.first { $0.id == currentID } ?? profiles[0]).using(provider) }
 
     init() {
         let dec = JSONDecoder()
@@ -107,7 +111,16 @@ final class AppState: ObservableObject {
         let list = localizeScenes(ps.isEmpty ? sceneProfiles(base: defaultProfile(english: en), english: en) : seeded ? ps : addMissingScenes(ps, english: en), english: en)
         defaults.set(true, forKey: "scenesSeeded")
         profiles = list
-        currentID = defaults.string(forKey: "currentID").flatMap(UUID.init).flatMap { id in list.contains { $0.id == id } ? id : nil } ?? list[0].id
+        let cid = defaults.string(forKey: "currentID").flatMap(UUID.init).flatMap { id in list.contains { $0.id == id } ? id : nil } ?? list[0].id
+        currentID = cid
+        // 旧版没有服务商列表：从各场景的连接迁移，当前服务商取当前场景的连接
+        let saved = defaults.data(forKey: "providers").flatMap { try? dec.decode([Provider].self, from: $0) } ?? []
+        let vs = saved.isEmpty ? (ps.isEmpty ? [defaultProvider()] : migrateProviders(ps)) : saved
+        providers = vs
+        let old = list.first { $0.id == cid } ?? list[0]
+        let oldConn = Provider(name: "", preset: old.preset, wire: old.wire, baseURL: old.baseURL, model: old.model, extraJSON: old.extraJSON)
+        providerID = defaults.string(forKey: "providerID").flatMap(UUID.init).flatMap { id in vs.contains { $0.id == id } ? id : nil }
+            ?? vs.first { sameConnection($0, oldConn) }?.id ?? vs[0].id
         fillMode = defaults.string(forKey: "fillMode").flatMap(FillMode.init) ?? .preview
         hotKey = defaults.data(forKey: "hotKey").flatMap { try? dec.decode(HotKeySpec.self, from: $0) } ?? .standard
         typingAssist = defaults.object(forKey: "typingAssist") as? Bool ?? true
@@ -125,6 +138,8 @@ final class AppState: ObservableObject {
         let enc = JSONEncoder()
         defaults.set(try? enc.encode(profiles), forKey: "profiles")
         defaults.set(currentID.uuidString, forKey: "currentID")
+        defaults.set(try? enc.encode(providers), forKey: "providers")
+        defaults.set(providerID.uuidString, forKey: "providerID")
         defaults.set(fillMode.rawValue, forKey: "fillMode")
         defaults.set(try? enc.encode(hotKey), forKey: "hotKey")
         defaults.set(typingAssist, forKey: "typingAssist")
